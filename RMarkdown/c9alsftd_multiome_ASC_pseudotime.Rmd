@@ -1,6 +1,6 @@
 ---
 title: "c9alsftd_multiome - Pseudotime analysis of astrocyte cell clusters"
-author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Department of Human Genetics | Emory University School of Medicine"
 date: "`r Sys.Date()`"
 output:
   html_document: default
