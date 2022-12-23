@@ -1,0 +1,1166 @@
+---
+title: "c9alsftd_multiome - Processing and analyses of single nucleus multiome data"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+
+## Load required packages and graphical set up
+
+```{r}
+library(ArchR)
+library(parallel)
+library(monocle3)
+library(tidyselect)
+library(tidygraph)
+library(tidytree
+library(tidyr
+library(tidyverse)
+library(parallel)
+library(monocle3)
+library(cicero)
+
+# https://rpubs.com/Koundy/71792
+# remove all bold text
+theme_Publication <- function(base_size=7, base_family="sans") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black", size = 0.2),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(t = 0, unit='cm'),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text()
+          ))
+      
+}
+
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+## loading packages
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) # Need to run for the right genome version. 
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+library(org.Hs.eg.db)
+library(ggupset)
+library(ReactomePA)
+library(clusterProfiler) # the GO part
+library(grid)
+library(gghighlight)
+library(DOSE)
+library(ggplot2)
+library(cowplot)
+library(wesanderson)
+library(ReactomePA)
+library("pathview")
+library(annotate)
+library(GenomicFeatures)
+
+options(ChIPseeker.downstreamDistance = 3000) # this can be used to defined the options. 
+options(ChIPseeker.ignore_1st_exon = TRUE)
+options(ChIPseeker.ignore_1st_intron = TRUE)
+options(ChIPseeker.ignore_downstream = TRUE) # put all into intergenic regions
+options(ChIPseeker.ignore_promoter_subcategory = TRUE)
+
+```
+
+## basic environment setup to run ArchR v1.0.2 or the most recent develop version
+Find **ArchR** information at <https://www.archrproject.com/index.html>
+Additional information about running **ArchR** multiomic pipeline: 
+<https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html>
+```{r}
+set.seed(1)
+addArchRThreads(threads = 100)
+addArchRGenome("hg38")
+getArchRGenome()
+```
+
+## Run ArchR pipeline
+### 1 # input fragment files 
+```{r}
+
+# get input fragment files - from the 10x cellranger-arc count outs/atac_fragments.tsv.gz and atac_fragments.tsv.gz.tbi
+frag_file <- atac_fragments.tsv.gz
+sample_name <- "sample 1"
+
+ArrowFiles <- createArrowFiles(
+  inputFiles = frag_file,
+  sampleNames = sample_name,
+  outputNames = sample_name,
+  minTSS = 4,
+  minFrags = 1000,
+  threads =40
+)
+
+#  make archR porjects before saving the workspace! 
+ArchR_C9 <- ArchRProject(ArrowFiles = ArrowFiles)
+
+# save ArchR project
+saveArchRProject(
+  ArchRProj = ArchR_C9,
+  outputDirectory = getOutputDirectory(ArchR_C9),
+  overwrite = TRUE,
+  load = TRUE,
+  dropCells = FALSE,
+  logFile = createLogFile("saveArchRProject"),
+  threads = getArchRThreads()
+)
+```
+
+### 2 # Quality control -based on snATAC-seq
+
+```{r}
+# 2.1 # TSS >=4, and min Frag 1000
+idxPass <- which(ArchR_C9$TSSEnrichment >= 4)
+cellsPass <- ArchR_C9$cellNames[idxPass]
+ArchR_C9<-ArchR_C9[cellsPass, ]
+
+idxPass <- which(ArchR_C9$nFrags >= 1000)
+cellsPass <- ArchR_C9$cellNames[idxPass]
+ArchR_C9<-ArchR_C9[cellsPass, ]
+
+# check matrices generated so far
+getAvailableMatrices(ArchR_C9) # "GeneScoreMatrix" "TileMatrix"
+
+# 2.2 # Filter doublet (default param), some doublet problems??
+ArchR_C9 <- addDoubletScores(input = ArchR_C9)
+
+ArchR_C9 <- filterDoublets(ArchR_C9)
+
+table(ArchR_C9$Sample)
+
+
+# 2.3 add Metadata Columns
+## Disease, genotype the same 
+ArchR_C9 <- addCellColData(ArchRProj = ArchR_C9, data = ArchR_C9$Sample,
+                              cells = ArchR_C9$cellNames, name = "Genotype", force=TRUE)
+ArchR_C9$Genotype <- sapply(strsplit(ArchR_C9$Genotype, "_"), function(x) x[1])
+
+### add sex info
+sex <- as.factor(c("M", "F", "F", "M", "M", "M", "M", "F", "F", "F", "M", "M", "M", "F"))
+ArchR_C9$sex <- ArchR_C9$patientID
+    for (i in 1:14){ 
+    ArchR_C9$sex <- gsub(samples_ID[i], sex[i], ArchR_C9$sex)}
+```
+
+### 3 # Quality control -based on snRNA-seq
+
+```{r}
+## import the RNA matrix 
+GEX_mat <- filtered_feature_bc_matrix.h5
+
+seRNA.C9 <- import10xFeatureMatrix(
+  input = GEX_mat,
+  names = sample_name,
+  featureType = "Gene Expression")
+
+# then add, and remove cells without RNA. ## good overlap!! 
+ArchR_C9 <- addGeneExpressionMatrix(input = ArchR_C9, seRNA = seRNA.C9, force = TRUE)
+
+# filter out the without RNA
+ArchR_C9 <- ArchR_C9[!is.na(ArchR_C9$Gex_nUMI)]
+```
+
+### start processing
+general work flow: LSI, (Harmony), Cluster, UMAP is the work flow. 
+```{r}
+
+######### START 
+  # set.seed(1)
+#### START #### LST on ATAC and RNA seperately 
+## 1 ## LSI, Dimensionality Reduction and Clustering, needs to force. ATAC and RNA seperately 
+ArchR_C9 <- addIterativeLSI(ArchRProj = ArchR_C9, useMatrix = "TileMatrix", name = "LSI_allcells-atac", 
+                            force = TRUE, threads = 100,
+                            iterations = 2, clusterParams = list(resolution = c(2), sampleCells = 5000, maxClusters = 10, n.start= 10),
+                            firstSelection = "top", depthCol = "nFrags", varFeatures = 50000, dimsToUse = 1:30, LSIMethod = 2,
+                            scaleDims = TRUE, corCutOff = 0.75, binarize = TRUE, outlierQuantiles = c(0.02, 0.98),
+                            filterBias = TRUE, sampleCellsPre = 10000,projectCellsPre = FALSE,sampleCellsFinal = NULL,
+                            selectionMethod = "var",scaleTo = 10000, totalFeatures = 5e+05,filterQuantile = 0.995,
+                            excludeChr = c(),saveIterations = TRUE, 
+                            UMAPParams = list(n_neighbors = 80, min_dist = 0.5, metric = "cosine", verbose =FALSE, fast_sgd = TRUE),
+                            nPlot = 10000, verbose = TRUE)
+ArchR_C9 <- addIterativeLSI(ArchRProj = ArchR_C9, useMatrix = "GeneExpressionMatrix", name = "LSI_allcells-rna", 
+                            force = TRUE, depthCol = "Gex_nUMI",varFeatures = 2500,
+                            iterations = 2, clusterParams = list(resolution = c(2), sampleCells = 5000, maxClusters = 10, n.start= 10),
+                            firstSelection = "top", dimsToUse = 1:30, LSIMethod = 2,
+                            scaleDims = TRUE, corCutOff = 0.75, binarize = TRUE, outlierQuantiles = c(0.02, 0.98),
+                            filterBias = TRUE, sampleCellsPre = 10000,projectCellsPre = FALSE,sampleCellsFinal = NULL,
+                            selectionMethod = "var", threads = 100,
+                            UMAPParams = list(n_neighbors = 80, min_dist = 0.5, metric = "cosine", verbose =FALSE, fast_sgd = TRUE),
+                            nPlot = 10000, verbose = TRUE)
+
+## 2 ## Harmony - on each seperately 
+ArchR_C9 <- addHarmony(
+      ArchRProj = ArchR_C9,
+      reducedDims = "LSI_allcells-atac",
+      name = "allcells-atac-Ham",force = TRUE,
+      groupBy = "Sample", ##this is what it corrects on -- here each batch is also each sample 
+      )
+ArchR_C9 <- addHarmony(
+      ArchRProj = ArchR_C9,
+      reducedDims = "LSI_allcells-rna",
+      name = "allcells-rna-Ham",force = TRUE,
+      groupBy = "Sample", ##this is what it corrects on -- here each batch is also each sample 
+      )
+
+################################################ 
+### DO the UMAP before and after HAM 
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "LSI_allcells-atac", name = "LSI_allcells-atac-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "LSI_allcells-rna", name = "LSI_allcells-rna-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-atac-Ham", name = "allcells-atac-Ham-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-rna-Ham", name = "allcells-rna-Ham-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+
+### plot it out. 
+ArchR_C9.unHAM.atac.UMAP3 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "LSI_allcells-atac-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex"))
+ArchR_C9.unHAM.rna.UMAP3 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "LSI_allcells-rna-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex"))
+ArchR_C9.HAM.atac.UMAP3 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-atac-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex"))
+ArchR_C9.HAM.rna.UMAP3 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-rna-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex"))
+  plotPDF(plotList = c(ArchR_C9.unHAM.atac.UMAP3,ArchR_C9.unHAM.rna.UMAP3,ArchR_C9.HAM.atac.UMAP3,ArchR_C9.HAM.rna.UMAP3),
+          name="ArchR_C9.unHAM.vsHam.before_combined.UMAP3.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+pdf(file="Plot_UMAP.ArchR_C9.unHAM.vsHam.before_combined.UMAP3.big.pdf", 
+     width = 15, height =6.2, onefile=FALSE)
+  ## Plot it: Just the samples 
+      ggAlignPlots(plotList=c(ArchR_C9.unHAM.atac.UMAP3[3],ArchR_C9.HAM.atac.UMAP3[3],ArchR_C9.unHAM.rna.UMAP3[3],ArchR_C9.HAM.rna.UMAP3[3]), type ="h")
+dev.off() ## close     
+
+########## 2 ### Combine Dims after Harnomny  ################################################ 
+#Combined Dims
+ArchR_C9 <- addCombinedDims(ArchR_C9, reducedDims = c("allcells-atac-Ham", "allcells-rna-Ham"), name =  "allcells-combined-Ham")
+
+## so three DIMs: after Ham 
+getReducedDims(ArchR_C9)
+  # Reduced dimensions not in computed reduceDims, Current ones are :
+  # LSI_allcells-atac,LSI_allcells-rna,allcells-atac-Ham,allcells-rna-Ham,allcells-combined-Ham
+
+###############################################################  
+
+## 3 ## Cluster calling -- Using the Ham 
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-atac-Ham",name = "atac_ham_clu12",  method = "Seurat", resolution = 1.2, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-atac-Ham",name = "atac_ham_clu05",  method = "Seurat", resolution = 0.5, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-rna-Ham",name = "rna_ham_clu12",  method = "Seurat", resolution = 1.2, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-rna-Ham",name = "rna_ham_clu05",  method = "Seurat", resolution = 0.5, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu12",  method = "Seurat", resolution = 1.2, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu05",  method = "Seurat", resolution = 0.5, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu06",  method = "Seurat", resolution = 0.6, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu07",  method = "Seurat", resolution = 0.7, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu08",  method = "Seurat", resolution = 0.8, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu09",  method = "Seurat", resolution = 0.9, force = TRUE,maxClusters = 40)
+ArchR_C9 <- 
+  addClusters(input = ArchR_C9, reducedDims = "allcells-combined-Ham",name = "combined_ham_clu10",  method = "Seurat", resolution = 1.0, force = TRUE,maxClusters = 40)
+
+###############################################################  
+## 4 ## Visualizing in a 2D UMAP Embedding, default is 40, 0.4 or 30, 0.5 in tutorial 
+## ATAC
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-atac-Ham", name = "allcells-atac-Ham-UMAP1",
+  nNeighbors = 40, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.4, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-atac-Ham", name = "allcells-atac-Ham-UMAP2",
+  nNeighbors = 80, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.5, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-atac-Ham", name = "allcells-atac-Ham-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+### RNA
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-rna-Ham", name = "allcells-rna-Ham-UMAP1",
+  nNeighbors = 40, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.4, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-rna-Ham", name = "allcells-rna-Ham-UMAP2",
+  nNeighbors = 80, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.5, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-rna-Ham", name = "allcells-rna-Ham-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+
+### combo
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-combined-Ham", name = "allcells-combined-Ham-UMAP1",
+  nNeighbors = 40, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.4, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-combined-Ham", name = "allcells-combined-Ham-UMAP2",
+  nNeighbors = 80, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.5, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+ArchR_C9 <- addUMAP(
+  ArchRProj = ArchR_C9, reducedDims = "allcells-combined-Ham", name = "allcells-combined-Ham-UMAP3",
+  nNeighbors = 50, ##the higher this is the "bigger picture" UMAP looks at the data. 
+  minDist = 0.8, #how tightly packed the dots are
+  metric = "cosine",force = TRUE, seed = 1 ## you can change this and force it to make new shapes. Sometimes they look "prettier" than other times. 
+  )
+
+## 5 ## UMAPembed 
+## ATAC only UMAPs plots
+ArchR_C9.atac.UMAP1_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-atac-Ham-UMAP1", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","atac_ham_clu05","atac_ham_clu12"))
+  plotPDF(plotList = ArchR_C9.atac.UMAP1_nc0512,
+          name="ArchR_C9.atac.UMAP1_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.atac.UMAP2_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-atac-Ham-UMAP2", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","atac_ham_clu05","atac_ham_clu12"))
+  plotPDF(plotList = ArchR_C9.atac.UMAP2_nc0512,
+          name="ArchR_C9.atac.UMAP2_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.atac.UMAP3_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-atac-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","atac_ham_clu05","atac_ham_clu12"))
+  plotPDF(plotList = ArchR_C9.atac.UMAP3_nc0512,
+          name="ArchR_C9.atac.UMAP3_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+## RNA only UMAPs plots
+ArchR_C9.rna.UMAP1_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-rna-Ham-UMAP1", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","rna_ham_clu05","rna_ham_clu12"))
+  plotPDF(plotList = ArchR_C9.rna.UMAP1_nc0512,
+          name="ArchR_C9.rna.UMAP1_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.rna.UMAP2_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-rna-Ham-UMAP2", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","rna_ham_clu05","rna_ham_clu12"))
+  plotPDF(plotList = ArchR_C9.rna.UMAP2_nc0512,
+          name="ArchR_C9.rna.UMAP2_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.rna.UMAP3_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-rna-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","rna_ham_clu05","rna_ham_clu12"))
+  plotPDF(plotList = ArchR_C9.rna.UMAP3_nc0512,
+          name="ArchR_C9.rna.UMAP3_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)  
+
+## 6 ## combo only UMAPs plots
+ArchR_C9.combined.UMAP1_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP1", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","combined_ham_clu05","combined_ham_clu12",
+                         "combined_ham_clu06","combined_ham_clu07","combined_ham_clu08","combined_ham_clu09","combined_ham_clu10"))
+plotPDF(plotList = ArchR_C9.combined.UMAP1_nc0512,
+          name="ArchR_C9.combined.UMAP1_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.combined.UMAP2_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP2", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","combined_ham_clu05","combined_ham_clu12", 
+                         "combined_ham_clu06","combined_ham_clu07","combined_ham_clu08","combined_ham_clu09","combined_ham_clu10"))
+  plotPDF(plotList = ArchR_C9.combined.UMAP2_nc0512,
+          name="ArchR_C9.combined.UMAP2_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.combined.UMAP3_nc0512 <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = c("Disease","Genotype","Sample","sex","combined_ham_clu05","combined_ham_clu12",
+                         "combined_ham_clu06","combined_ham_clu07","combined_ham_clu08","combined_ham_clu09","combined_ham_clu10"))
+  plotPDF(plotList = ArchR_C9.combined.UMAP3_nc0512,
+          name="ArchR_C9.combined.UMAP3_nc0512.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5) 
+
+```
+
+### continue processing with the combined and harmonized Dims - get marker genes
+```{r}
+## 7 ## add imput weights, do before plotting.
+ArchR_C9 <-addImputeWeights(ArchR_C9, reducedDims = "allcells-combined-Ham")  
+
+## 8 ## plot the genes first -- 38 of them. 
+ASCgenes <- c("GFAP", "AQP4", "SLC1A2") #ASC
+  NEUgenes <- c("SNAP25", "SYT1") #neurons
+  EXgenes <- c("SLC17A7", "SATB2", "RORB", "NEUROD2") #EX
+  INgenes <- c("GAD1", "GAD2", "NXPH1") #inhibit
+  MGgenes <- c("CSF1R", "CD74", "P2RY12", "PTPRC", "TMEM119") #MG
+  ODCgenes <- c("MOBP", "MBP","ST18","KLK6", "SLC5A11") #ODC
+  OPCgenes <- c("PDGFRA", "CSPG4") #OPC
+  ENDOgenes <- c("FLT1","CLDN5","ABCB1","EBF1") #ENDO
+
+C9_features <- list(
+ Astrocytes = ASCgenes,
+  Neurons = NEUgenes,
+ ExcitatoryNeu = EXgenes,
+ InhibitoryNeu = INgenes, 
+ Microglia = MGgenes, 
+ Oligodengrocytes=ODCgenes, 
+ OligoPC = OPCgenes,
+ Endothelial =  ENDOgenes)
+
+majGenesLST <- c(ASCgenes,NEUgenes,EXgenes,INgenes,MGgenes,ODCgenes,OPCgenes,ENDOgenes)
+
+## neuron specific 
+  L23genes <- c("HS6ST3", "KCNIP4", "LRRTM4", "CUX2") # remove "FAM19A1"
+  L4genes <- c("POU6F2", "FOXP2", "PTPRD", "IL1RAPL2", "RORB")
+  L56genes <- c("TLE4", "ASIC2", "KIAA1217", "MDGA2", "LRP1B")
+  L56ccgenes <- c("NRG1", "PDZRN4", "RALYL", "LRP1B", "SYT1")
+  NeuNRGNgenes <- c("NRGN", "TMSB10", "PKM", "SYT1", "HSP90AA1", "HSP90AB1", "SYP", "RTN4", "YWHAH", "CHN1")
+  NeuImatgenes <- c("KCNIP4", "MEG3", "IQCJ-SCHIP1","RALYL") ## remove AC011288.2
+  INSSTgenes <- c("SST", "NRXN3", "RBFOX1", "SOX6", "KIAA1217", "NXPH1")
+  INPVgenes <- c("TAC1", "ANK1", "MYO16", "CNTNAP3", "SOX6")
+  INSV2Cgenes <- c("MYO16", "FGF14", "KIAA1211", "EYA4", "SV2C")
+  INVIPgenes <- c("PROX1", "VIP", "RGS12", "SYNPR", "CNTNAP2")
+ 
+NeulayersLST <- c(L23genes,L4genes,L56genes,L56ccgenes,NeuNRGNgenes,NeuImatgenes,
+                 INSSTgenes,INPVgenes,INSV2Cgenes,INVIPgenes)
+  
+### embed the geneScores first: 
+ArchR_C9.combo.UMAP3.GSp <- 
+plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneScoreMatrix", continuousSet = "solarExtra", 
+              name = majGenesLST, imputeWeights = getImputeWeights(ArchR_C9))
+    plotPDF(plotList = ArchR_C9.combo.UMAP3.GSp, name = "ArchR_C9.combo.UMAP3.GSp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.combo.UMAP3.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = majGenesLST, imputeWeights = getImputeWeights(ArchR_C9))
+    plotPDF(plotList = ArchR_C9.combo.UMAP3.GEp, name = "ArchR_C9.combo.UMAP3.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+## neuron specific things
+    ArchR_C9.combo.UMAP3.neu.GSp <- 
+plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneScoreMatrix", continuousSet = "solarExtra", 
+              name = NeulayersLST, imputeWeights = getImputeWeights(ArchR_C9))
+    plotPDF(plotList = ArchR_C9.combo.UMAP3.neu.GSp, name = "ArchR_C9.combo.UMAP3.neu.GSp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+ArchR_C9.combo.UMAP3.neu.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = NeulayersLST, imputeWeights = getImputeWeights(ArchR_C9))
+    plotPDF(plotList = ArchR_C9.combo.UMAP3.neu.GEp, name = "ArchR_C9.combo.UMAP3.neu.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+        
+### modules scores
+### 7 ### try geneScore modules  and gene Expression modules 
+ArchR_C9 <- addModuleScore(ArchR_C9, features = C9_features, useMatrix = "GeneScoreMatrix", name="C9modGS")
+
+C9.modGS.listP <- c("C9modGS.Astrocytes",
+                     "C9modGS.Neurons","C9modGS.ExcitatoryNeu","C9modGS.InhibitoryNeu","C9modGS.Microglia",
+                     "C9modGS.Oligodengrocytes","C9modGS.OligoPC","C9modGS.Endothelial")
+C9.modGE.listP <- c("C9modGE.Astrocytes",
+                     "C9modGE.Neurons","C9modGE.ExcitatoryNeu","C9modGE.InhibitoryNeu","C9modGE.Microglia",
+                     "C9modGE.Oligodengrocytes","C9modGE.OligoPC","C9modGE.Endothelial")
+
+ArchR_C9 <-addImputeWeights(ArchR_C9, reducedDims = "allcells-combined-Ham")  
+
+ArchR_C9.combo.UMAP3.modGSp <- 
+  plotEmbedding(ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", name=C9.modGS.listP, imputeWeights = getImputeWeights(ArchR_C9))
+  plotPDF(plotList = ArchR_C9.combo.UMAP3.modGSp, name = "ArchR_C9.combo.UMAP3.modGSp.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+#################################################################################### 
+### 9 ### get marker gene features -- ATAC
+  # --1-- # the marker genes per each cluster-->based on GeneScore
+ArchR_C9.combo_clu09.markersGS <- getMarkerFeatures(
+                    ArchRProj = ArchR_C9, 
+                    useMatrix = "GeneScoreMatrix", 
+                    groupBy = "combined_ham_clu09",
+                    bias = c("TSSEnrichment", "log10(nFrags)"),
+                    testMethod = "wilcoxon"
+                ) 
+  
+## export the list 
+# set the variable, so this can function easier, without writing multiple things: 
+markersGS.rds <- ArchR_C9.combo_clu09.markersGS
+markersGS.rds.name <- "ArchR_C9.combo_clu09.markersGS"
+csv.file1 <- paste(markersGS.rds.name, ".FDR001_log2FC05.csv", sep="")
+csv.file2 <- paste(markersGS.rds.name, ".FDR005_log2FC05.csv", sep="")
+
+  # --1-- # get markers list per cluster to verify -> use stronger list 
+mrk.reg <- getMarkers(markersGS.rds, cutOff = "FDR <= 0.01 & Log2FC >= 0.5")  
+mrk.low <- getMarkers(markersGS.rds, cutOff = "FDR <= 0.05 & Log2FC >= 0.5")  
+
+colnames.mrk <- c("seqnames","start","end","strand","gene","idx","Log2FC","FDR","MeanDiff")
+ mrk.reg.2 <-  lapply(mrk.reg, setNames, colnames.mrk)
+ mrk.low.2 <-  lapply(mrk.low, setNames, colnames.mrk)
+
+# --2-- # find out what's non sig
+ mrk.reg.2 <- Filter(function(x) dim(x)[1] > 0, mrk.reg.2)
+ mrk.low.2 <- Filter(function(x) dim(x)[1] > 0, mrk.low.2)
+
+# --3-- # loop to write it out
+ rm(d.all)
+for (n in names(mrk.reg.2))
+  mrk.reg.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.reg.2)
+  write.table(as.data.frame(d.all), csv.file1, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)
+ rm(d.all)
+for (n in names(mrk.low.2))
+  mrk.low.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.low.2)
+  write.table(as.data.frame(d.all), csv.file2, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)  
+
+#########################################################
+######### Try score with GeneExpression Matrix  
+    # --1-- # the marker genes per each cluster -->> GeneExpressionMatrix
+ArchR_C9.combo_clu09.markersGE <- getMarkerFeatures(
+                    ArchRProj = ArchR_C9, 
+                    useMatrix = "GeneExpressionMatrix", 
+                    groupBy = "combined_ham_clu09",
+                    bias = c("TSSEnrichment", "log10(nFrags)"),
+                    testMethod = "wilcoxon"
+                )
+
+## export the list 
+# set the variable, so this can function easier, without writing multiple things: 
+markersGE.rds <- ArchR_C9.combo_clu09.markersGE
+markersGE.rds.name <- "ArchR_C9.combo_clu09.markersGE"
+csv.file1 <- paste(markersGE.rds.name, ".FDR001_log2FC05.csv", sep="")
+csv.file2 <- paste(markersGE.rds.name, ".FDR005_log2FC05.csv", sep="")
+
+  # --1-- # get markers list per cluster to verify -> use stronger list 
+mrk.reg <- getMarkers(markersGE.rds, cutOff = "FDR <= 0.01 & Log2FC >= 0.5")  
+mrk.low <- getMarkers(markersGE.rds, cutOff = "FDR <= 0.05 & Log2FC >= 0.5")  
+
+colnames.mrk <- c("seqnames","start","end","strand","gene","idx","Log2FC","FDR","MeanDiff")
+ mrk.reg.2 <-  lapply(mrk.reg, setNames, colnames.mrk)
+ mrk.low.2 <-  lapply(mrk.low, setNames, colnames.mrk)
+
+# --2-- # find out what's non sig
+ mrk.reg.2 <- Filter(function(x) dim(x)[1] > 0, mrk.reg.2)
+ mrk.low.2 <- Filter(function(x) dim(x)[1] > 0, mrk.low.2)
+
+# --3-- # loop to write it out
+ rm(d.all)
+for (n in names(mrk.reg.2))
+  mrk.reg.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.reg.2)
+  write.table(as.data.frame(d.all), csv.file1, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)
+ rm(d.all)
+for (n in names(mrk.low.2))
+  mrk.low.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.low.2)
+  write.table(as.data.frame(d.all), csv.file2, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)  
+```
+
+### peak calling
+```{r}
+################
+pathToMacs2 <- findMacs2()
+
+# if don't like peaks, will add manually?
+addReproduciblePeakSet()
+ArchRProj <- addPeakSet()
+
+ArchR_C9 <- addGroupCoverages(ArchRProj = ArchR_C9, groupBy = "combined_ham_clu09",
+                              threads = 80, force=TRUE)
+
+## then call peaks, in each clusters, total of 38 clusters
+ArchR_C9 <- addReproduciblePeakSet(
+    ArchRProj = ArchR_C9, 
+    groupBy = "combined_ham_clu09", 
+    pathToMacs2 = pathToMacs2)
+
+ArchR_C9_PeakSet <- getPeakSet(ArchR_C9)
+
+## add the peak matrix  
+ArchR_C9_peak <- addPeakMatrix(ArchR_C9)
+
+ArchR_C9 <- ArchR_C9_peak
+
+  ##########################
+## too many small peaks , set q/p value higher to 0.01 instead of default 0.1 
+    ArchR_C9_v1 <- ArchR_C9
+
+    ArchR_C9_v1 <- addReproduciblePeakSet(
+        ArchRProj = ArchR_C9_v1, 
+        groupBy = "combined_ham_clu09", 
+        pathToMacs2 = pathToMacs2, 
+        cutOff = 0.01)
+    ArchR_C9_v1PeakSet <- getPeakSet(ArchR_C9_v1)
+
+    ArchR_C9_v1PeakSet$cluster <- names(ArchR_C9_v1PeakSet)
+    ## convert into data frame
+    ArchR_C9_v1PeakSet_df <- data.frame(ArchR_C9_v1PeakSet)
+      nrow(ArchR_C9_v1PeakSet_df) # [1] 362205
+
+## needs to add the peak matrix (use the 0.01 filtered peak sets )
+ArchR_C9_peak <- addPeakMatrix(ArchR_C9_v1)
+  getAvailableMatrices(ArchR_C9_v1)
+  # [1] "GeneExpressionMatrix" "GeneScoreMatrix"      "PeakMatrix"           "TileMatrix"  
+  
+ArchR_C9 <- ArchR_C9_v1
+
+## then add motif sets to the archR
+#  devtools::install_github("GreenleafLab/chromVARmotifs")
+#  library("chromVARmotifs")
+  ArchR_C9_v1 <- addMotifAnnotations(ArchRProj = ArchR_C9, motifSet = "cisbp", name = "Motif")
+  
+  ArchR_C9 <- ArchR_C9_v1
+  ## then save again
+  saveArchRProject(
+      ArchRProj = ArchR_C9,
+      outputDirectory = getOutputDirectory(ArchR_C9),
+      overwrite = TRUE,
+      load = FALSE,
+      dropCells = FALSE,
+      logFile = createLogFile("saveArchRProject"),
+      threads = getArchRThreads()
+    )
+```
+
+### naming the clusters
+```{r}
+unique(ArchR_C9$type)
+ArchR_C9$type <- paste(ArchR_C9$combined_ham_clu09,"_", sep="")
+  ArchR_C9$type <- gsub("C1_","C1_Unassigned", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C2_","C2_MG", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C3_","C3_Unassigned", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C4_","C4_ODC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C5_","C5_Unassigned", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C6_","C6_ODC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C7_","C7_ODC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C8_","C8_ODC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C9_","C9_ODC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C10_","C10_ODC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C11_","C11_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C12_","C12_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C13_","C13_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C14_","C14_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C15_","C15_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C16_","C16_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C17_","C17_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C18_","C18_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C19_","C19_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C20_","C20_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C21_","C21_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C22_","C22_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C23_","C23_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C24_","C24_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C25_","C25_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C26_","C26_NEU", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C27_","C27_ASC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C28_","C28_ASC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C29_","C29_ASC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C30_","C30_ASC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C31_","C31_ASC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C32_","C32_OPC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C33_","C33_OPC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C34_","C34_OPC", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C35_","C35_ENDO", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C36_","C36_MG", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C37_","C37_MG", ArchR_C9$type)
+  ArchR_C9$type <- gsub("C38_","C38_MG", ArchR_C9$type)
+  
+### add each neuron types  
+ArchR_C9$type2 <- paste(ArchR_C9$combined_ham_clu09,"_", sep="")  
+ArchR_C9$type2 <- gsub("C1_","C1_Unassigned", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C2_","C2_MG", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C3_","C3_Unassigned", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C4_","C4_ODC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C5_","C5_Unassigned", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C6_","C6_ODC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C7_","C7_ODC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C8_","C8_ODC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C9_","C9_ODC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C10_","C10_ODC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C11_","C11_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C12_","C12_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C13_","C13_IN", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C14_","C14_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C15_","C15_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C16_","C16_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C17_","C17_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C18_","C18_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C19_","C19_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C20_","C20_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C21_","C21_EX", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C22_","C22_IN", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C23_","C23_IN", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C24_","C24_IN", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C25_","C25_IN", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C26_","C26_IN", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C27_","C27_ASC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C28_","C28_ASC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C29_","C29_ASC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C30_","C30_ASC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C31_","C31_ASC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C32_","C32_OPC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C33_","C33_OPC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C34_","C34_OPC", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C35_","C35_ENDO", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C36_","C36_MG", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C37_","C37_MG", ArchR_C9$type2)
+ArchR_C9$type2 <- gsub("C38_","C38_MG", ArchR_C9$type2)
+  unique(ArchR_C9$type2)
+
+ArchR_C9$type2name <- sapply(strsplit(ArchR_C9$type2, "_"), function(x) x[2])
+  unique(ArchR_C9$type2name)
+  # [1] "EX"         "MG"         "IN"         "ODC"        "ASC"        "OPC"        "ENDO"       "Unassigned"
+
+### then plot the groups 
+  ArchR_C9.col.type <- c("ASC"="#ca0020","EX"="#4dac26" ,"ODC"="#3361A5",        
+                         "ENDO"="#7b3294","IN"="#d01c8b",         
+                         "OPC"="#88CEEF","MG"="#F47D2B",         
+                         "Unassigned"="#D8A767")
+
+ArchR_C9.combined.UMAP3_type.p <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = "type2name",
+                alpha = 0.6,baseSize=0, size =0.8, plotAs = "points", pal=ArchR_C9.col.type,bgWidth=1.2, labelSize=0)
+
+ArchR_C9.combined.UMAP3_type.lab_p <- 
+  plotEmbedding(ArchRProj = ArchR_C9, embedding = "allcells-combined-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = "type2name",
+                alpha = 0.6,baseSize=0, size =0.8, plotAs = "points", pal=ArchR_C9.col.type,bgWidth=1.2, labelSize=6)
+
+## then PDF
+pdf(file="Plot_UMAP.ArchR_C9.combined.UMAP3_type.no_lab.pdf", 
+     width = 6.2, height =6.2, onefile=FALSE)
+  ## Plot it:
+      ggAlignPlots(ArchR_C9.combined.UMAP3_type.p, type ="h") 
+dev.off() ## close   
+
+pdf(file="Plot_UMAP.ArchR_C9.combined.UMAP3_type.yes_lab.pdf", 
+     width = 6.2, height =6.2, onefile=FALSE)
+  ## Plot it:
+      ggAlignPlots(ArchR_C9.combined.UMAP3_type.lab_p, type ="h") 
+dev.off() ## close   
+
+## also without the unassigned
+ArchR_C9.combined.UMAP3_type.noUnassign.p <- 
+  plotEmbedding(ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$type2name !="Unassigned")], 
+                embedding = "allcells-combined-Ham-UMAP3", colorBy = "cellColData", #continuousSet = "solarExtra", 
+                name = "type2name",
+                alpha = 0.6,baseSize=0, size =0.8, plotAs = "points", pal=ArchR_C9.col.type,bgWidth=1.2, labelSize=0)
+pdf(file="Plot_UMAP.ArchR_C9.combined.UMAP3_type.noUnassigned.pdf", 
+     width = 6.2, height =6.2, onefile=FALSE)
+  ## Plot it:
+      ggAlignPlots(ArchR_C9.combined.UMAP3_type.noUnassign.p, type ="h") 
+dev.off() ## close   
+
+## set orders 
+    C9TDP_df$Genotype <- factor(C9TDP_df$Genotype, 
+                                          levels = c("CTL","ALS","FTD"))
+
+
+C9TDP_sample_hm <- 
+Heatmap(as.matrix(C9TDP_df[c(1)]), rect_gp = gpar(col = "white", lwd = 2),
+        name='Clinical DX', col=c("CTL"="#d95f02","FTD"="#7570b3","ALS"="#1b9e77")) +
+  Heatmap(as.matrix(C9TDP_df[c(4)]),cluster_rows = FALSE, rect_gp = gpar(col = "white", lwd = 2),
+          name ='Relative TDP level', col=colorRamp2(c(0, 1000, 2000), c("grey", "#fdae6b","#b30000"))) +
+  Heatmap(as.matrix(C9TDP_df[c(2)]),cluster_rows = FALSE, rect_gp = gpar(col = "white", lwd = 2),
+          col=c("F"="#80cdc1", "M"="#dfc27d"), name ='Sex')
+   
+### need to do the bar -- or complex heatmap plus the bar annotations 
+TypeSample_barp <- ggplot(data=ArchR_C9.Type_sample.ct3, aes(x=Sample, y=Freq, fill=cluster)) +
+        geom_bar(stat="identity", position="fill")+
+        theme_prism(base_fontface = "plain")+
+    scale_fill_manual(limits=c("ASC", "EX", "ODC","ENDO",
+                                 "IN","OPC","MG"), 
+                        values=c("#ca0020", "#4dac26", "#3361A5", "#7b3294", 
+                                 "#d01c8b", "#88CEEF","#F47D2B"))
+
+## grid.arrange(C9TDP_sample_hm, TypeSample_barp, ncol=2)
+pdf(file="TypeSample_barPlot.pdf", 
+                width = 10, height = 6, onefile=FALSE)
+  TypeSample_barp
+  dev.off()      
+pdf(file="TypeSample_Heatmap.pdf", 
+                width = 6, height = 6, onefile=FALSE)
+  C9TDP_sample_hm
+  dev.off()      
+```
+
+
+### plot the Figure 1B
+```{r}
+sampleC9_list <- read.table("sampleC9_list.csv", header = T, sep=",")
+
+sampleC9_list$type <- factor(sampleC9_list$type, levels=unique(as.character(sampleC9_list$type)) )
+
+pdf(file="pTDP_plot.pdf", 
+     width = 2, height =2, onefile=TRUE)  
+ggplot(sampleC9_list %>% filter(pTDP43!=0), aes(x=type, y=pTDP43)) + 
+  geom_boxplot(outlier.shape = NA)+
+  #geom_point(aes(x=all, y=rho, color=group), position = "jitter") +
+  geom_jitter(aes(x=type, y=pTDP43, color=pTDP43), width = 0.3, size=0.5)+
+    #scale_fill_manual(values = colorRamp2(c(0, 1000, 2000), c("grey", "#fdae6b","#b30000")))+
+   # scale_colour_gradientn(colours = c("grey", "#fdae6b","#b30000"),
+   #                       values = c(0, 1000, 2000))+
+   # 
+  scale_color_gradient2(low="grey",mid="#fdae6b",high="#b30000",midpoint=1000)+
+  theme_Publication()
+
+dev.off()
+
+  Heatmap(as.matrix(C9TDP_df[c(4)]),cluster_rows = FALSE, rect_gp = gpar(col = "white", lwd = 2),
+          name ='Relative TDP level', col=colorRamp2(c(0, 1000, 2000), c("grey", "#fdae6b","#b30000")))
+
+```
+
+
+## plot the pseudo-bulk chromatin chromatin plots -- for the major cell types -- too slow, just the get bigwig, then IGV
+```{r}
+sevenmajor <- c("GFAP", #ASG
+                "NEUROD2", #EX
+                "GAD2", #IN
+                "CSF1R",#MG
+                "MOBP", #ODC
+                "PDGFRA", "CSPG4", #OPC
+                "FLT1","CLDN5","ABCB1","EBF1" #ENDO
+                )
+## too much -- just the 7 genes
+allcell_brower_GSm_celltyes_major <- plotBrowserTrack(
+    ArchRProj = ArchR_C9, groupBy = "type2name",geneSymbol = sevenmajor, pal=ArchR_C9.col.type,
+    upstream = 50000, #50kb, maybe too small
+    downstream = 50000
+)
+plotPDF(plotList = allcell_brower_GSm_celltyes_major, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_50kb_GSm_celltyes_major.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+
+# 100 kb
+allcell_brower_100kb_GSm_celltyes_major <- plotBrowserTrack(
+    ArchRProj = ArchR_C9, groupBy = "type2name",geneSymbol = sevenmajor, pal=ArchR_C9.col.type,
+    upstream = 100000, #50kb, maybe too small
+    downstream = 100000
+)
+plotPDF(plotList = allcell_brower_100kb_GSm_celltyes_major, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_100kb_GSm_celltyes_major.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+
+####################################
+#### below are for the whole list 
+## 50kb up and down, GeneScores matrix
+allcell_brower_GSm_celltyes <- plotBrowserTrack(
+    ArchRProj = ArchR_C9, groupBy = "type2name",geneSymbol = majGenesLST, pal=ArchR_C9.col.type,
+    upstream = 50000, #50kb, maybe too small
+    downstream = 50000
+)
+
+allcell_brower_GSm_others <- plotBrowserTrack(
+    ArchRProj = ArchR_C9,groupBy = "type2name",geneSymbol = NeuGenesLST, pal=ArchR_C9.col.type,
+    upstream = 50000,
+    downstream = 50000
+)
+
+## into multi-page PDF
+plotPDF(plotList = allcell_brower_GSm_celltyes, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GSm_celltyes.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+plotPDF(plotList = allcell_brower_GSm_others, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GSm_others.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+
+## 100 kb up and down
+allcell_brower_GSm_100kb_celltyes <- plotBrowserTrack(
+    ArchRProj = ArchR_C9, groupBy = "type2name",geneSymbol = majGenesLST, useMatrix="GeneScoreMatrix",pal=ArchR_C9.col.type,
+    upstream = 100000, #50kb, maybe too small
+    downstream = 100000
+)
+
+allcell_brower_GSm_100kb_others <- plotBrowserTrack(
+    ArchRProj = ArchR_C9,groupBy = "type2name",geneSymbol = NeuGenesLST, useMatrix="GeneScoreMatrix",pal=ArchR_C9.col.type,
+    upstream = 100000,
+    downstream = 100000
+)
+
+## into multi-page PDF
+plotPDF(plotList = allcell_brower_GSm_100kb_celltyes, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GSm_100kb_celltyes.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+plotPDF(plotList = allcell_brower_GSm_100kb_others, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GSm_100kb_others.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+
+######### Use gene expression matrix 
+## 50kb up and down
+allcell_brower_GEm_celltyes <- plotBrowserTrack(
+    ArchRProj = ArchR_C9, groupBy = "type2name",geneSymbol = majGenesLST, useMatrix="GeneExpressionMatrix",pal=ArchR_C9.col.type,
+    upstream = 50000, #50kb, maybe too small
+    downstream = 50000
+)
+
+allcell_brower_GEm_others <- plotBrowserTrack(
+    ArchRProj = ArchR_C9,groupBy = "type2name",geneSymbol = NeuGenesLST, useMatrix="GeneExpressionMatrix",pal=ArchR_C9.col.type,
+    upstream = 50000,
+    downstream = 50000
+)
+
+## into multi-page PDF
+plotPDF(plotList = allcell_brower_GEm_celltyes, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GEm_celltyes.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+plotPDF(plotList = allcell_brower_GEm_others, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GEm_others.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+
+## 100 kb up and down
+allcell_brower_GEm_100kb_celltyes <- plotBrowserTrack(
+    ArchRProj = ArchR_C9, groupBy = "type2name",geneSymbol = majGenesLST, useMatrix="GeneExpressionMatrix",pal=ArchR_C9.col.type,
+    upstream = 100000, #50kb, maybe too small
+    downstream = 100000
+)
+
+allcell_brower_GEm_100kb_others <- plotBrowserTrack(
+    ArchRProj = ArchR_C9,groupBy = "type2name",geneSymbol = NeuGenesLST, useMatrix="GeneExpressionMatrix",pal=ArchR_C9.col.type,
+    upstream = 100000,
+    downstream = 100000
+)
+
+## into multi-page PDF
+plotPDF(plotList = allcell_brower_GEm_100kb_celltyes, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GEm_100kb_celltyes.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+plotPDF(plotList = allcell_brower_GEm_100kb_others, 
+    name = "Plot-Tracks-Marker-Genes_allcell_brower_GEm_100kb_others.pdf", 
+    ArchRProj = ArchR_C9, 
+    addDOC = FALSE, width = 5, height = 5)
+
+```
+
+## bigwig for the 7 major types, also for CTL and C9ALSftd
+```{r}
+  unique(ArchR_C9$type2name)
+sevenmajor <- c("GFAP", #ASG
+                "NEUROD2", #EX
+                "GAD2", #IN
+                "CSF1R",#MG
+                "MOBP", #ODC
+                "PDGFRA", "CSPG4", #OPC
+                "FLT1","CLDN5","ABCB1","EBF1" #ENDO
+                )
+
+### bulk of each type for the fig7 panel 
+getGroupBWmod(
+  ArchRProj = ArchR_C9,
+  groupBy = "type2name",
+  normMethod = "ReadsInTSS",
+  tileSize = 100,maxCells = 2000,
+  ceiling = 100,verbose = TRUE, threads = 100,
+  outdir = "OURdir1")
+
+### 7 types, but just CTL vs C9ALSftd (to check against the DEseq comp), #16 groups 
+getGroupBWmod(
+  ArchRProj = ArchR_C9,
+  groupBy = "TypeGenotype",
+  normMethod = "ReadsInTSS",
+  tileSize = 100,maxCells = 2000,
+  ceiling = 100,verbose = TRUE, threads = 20,
+  outdir = "OURdir2")
+
+# 32 groups
+getGroupBWmod(
+  ArchRProj = ArchR_C9,
+  groupBy = "TypeTDP",
+  normMethod = "ReadsInTSS",
+  tileSize = 100,maxCells = 2000,
+  ceiling = 100,verbose = TRUE, threads = 20,
+  outdir = "OURdir3")
+
+```
+
+## bigwig for the clus38 and group by TDP levels major types, also for CTL and C9ALSftd
+```{r}
+
+length(unique(ArchR_C9$clu38IDtype)) #435
+ArchR_C9$clu38TDP <- paste(sapply(strsplit(as.character(ArchR_C9$clu38IDtype), "_"), function(x) x[1]),
+                          sapply(strsplit(as.character(ArchR_C9$clu38IDtype), "_"), function(x) x[2]), sep="_")
+
+## the clu 38 then seperate by three TDP groups 
+length(unique(ArchR_C9$clu38TDP))
+  # "C12-EX_noTDP"          "C20-EX_noTDP"
+
+## deposite into 
+
+### 38 clusters grouped by TDP levels
+getGroupBWmod(
+  ArchRProj = ArchR_C9,
+  groupBy = "clu38TDP",
+  normMethod = "ReadsInTSS",
+  tileSize = 100,maxCells = 2000,
+  ceiling = 100,verbose = TRUE, threads = 100,
+  outdir = "OUTdir4")
+```
+
+## heatmap for the RNA expresion and GeneScore. Fig 1
+```{r}
+sevenmajor <- c("GFAP", #ASG
+                "NEUROD2", #EX
+                "GAD2", #IN
+                "CSF1R",#MG
+                "MOBP", "MBP","ST18","KLK6", "SLC5A11", #ODC
+                "PDGFRA", "CSPG4", #OPC
+                "FLT1","CLDN5","ABCB1","EBF1" #ENDO
+                )
+
+sevenmajor_markerGSnoUnA <- getMarkerFeatures(
+    ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$type2name !="Unassigned")], 
+    useMatrix = "GeneScoreMatrix", 
+    groupBy = "type2name",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon"
+)
+
+
+sevenmajor_markerGS_hm <- plotMarkerHeatmap(
+  seMarker = sevenmajor_markerGSnoUnA, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  labelMarkers = sevenmajor,
+  transpose = FALSE, returnMatrix=FALSE)
+
+# save PDF
+plotPDF(sevenmajor_markerGS_hm, name = "GeneScores-Marker-Heatmap_sevenmajor_markerGS_hm", width = 4, height = 8, 
+        ArchRProj = ArchR_C9, addDOC = FALSE)
+
+# return matrix, than plot just the marker genes
+sevenmajor_markerGS_mat <- plotMarkerHeatmap(
+  seMarker = sevenmajor_markerGSnoUnA, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  labelMarkers = sevenmajor,
+  transpose = FALSE, returnMatrix=TRUE)
+
+      ## custom matrix heatmap --> this is too simple 
+      sevenmajor_markerGS_mat_slim <-
+            Heatmap(subset(sevenmajor_markerGS_mat, rownames(sevenmajor_markerGS_mat) %in% sevenmajor), #col = col_ht,width = unit(5,"cm"), 
+                    name = 'ATAC geneScore\n(z-score)', cluster_rows = FALSE,cluster_columns = FALSE)
+      pdf(file="sevenmajor_markerGS_mat_slim.pdf", 
+           width = 5, height = 4)
+        ## Plot it:
+      sevenmajor_markerGS_mat_slim
+      dev.off() ## close
+
+##### Use geneExpression matrix 
+sevenmajor_markerGE <- getMarkerFeatures(
+    ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$type2name !="Unassigned")], 
+    useMatrix = "GeneExpressionMatrix", 
+    groupBy = "type2name",
+    bias = c("TSSEnrichment", "log10(nFrags)"),
+    testMethod = "wilcoxon"
+)
+
+sevenmajor_markerGE_hm <- plotMarkerHeatmap(
+  seMarker = sevenmajor_markerGE, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  labelMarkers = sevenmajor,
+  transpose = FALSE, returnMatrix=FALSE)
+sevenmajor_markerGE_mat <- plotMarkerHeatmap(
+  seMarker = sevenmajor_markerGE, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 1.25", 
+  labelMarkers = sevenmajor,
+  transpose = FALSE, returnMatrix=TRUE)
+
+# save PDF
+plotPDF(sevenmajor_markerGE_hm, name = "GeneScores-Marker-Heatmap_sevenmajor_markerGE_hm", width = 4, height = 8, 
+        ArchRProj = ArchR_C9, addDOC = FALSE)
+
+########## NOt used get --> checking the gene expressions TARDBP-- either in patients as a bulk or per 7 major cell types 
+unique(ArchR_C9$patientDisease)
+ArchR_C9$patientDiseaseType <- paste(ArchR_C9$type2name, "-", ArchR_C9$patientDisease, sep="")
+unique(ArchR_C9$patientDiseaseType)
+
+#### for the gene expression part, do the get group -- but this is still grouped - not what I wanted
+  ## rna
+genExp.SE.patientDiseaseType <- 
+  getGroupSE(
+  ArchRProj = ArchR_C9, useMatrix = "GeneExpressionMatrix",
+  groupBy = "patientDiseaseType", 
+  divideN = FALSE, threads = getArchRThreads(),verbose = TRUE, logFile = createLogFile("getGroupSE")
+  )
+genExp.SE.patientDisease <- 
+  getGroupSE(
+  ArchRProj = ArchR_C9, useMatrix = "GeneExpressionMatrix",
+  groupBy = "patientDisease", 
+  divideN = FALSE, threads = getArchRThreads(),verbose = TRUE, logFile = createLogFile("getGroupSE")
+  )
+```

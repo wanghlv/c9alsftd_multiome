@@ -1,0 +1,656 @@
+---
+title: "c9alsftd_multiome - Pseudotime analysis of astrocyte cell clusters"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+
+## Load required packages and graphical set up
+
+```{r}
+library(ArchR)
+library(parallel)
+library(monocle3)
+library(tidyselect)
+library(tidygraph)
+library(tidytree
+library(tidyr
+library(tidyverse)
+library(parallel)
+library(monocle3)
+library(cicero)
+
+# https://rpubs.com/Koundy/71792
+# remove all bold text
+theme_Publication <- function(base_size=7, base_family="sans") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black", size = 0.2),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(t = 0, unit='cm'),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text()
+          ))
+      
+}
+
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+## loading packages
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) # Need to run for the right genome version. 
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+library(org.Hs.eg.db)
+library(ggupset)
+library(ReactomePA)
+library(clusterProfiler) # the GO part
+library(grid)
+library(gghighlight)
+library(DOSE)
+library(ggplot2)
+library(cowplot)
+library(wesanderson)
+library(ReactomePA)
+library("pathview")
+library(annotate)
+library(GenomicFeatures)
+
+options(ChIPseeker.downstreamDistance = 3000) # this can be used to defined the options. 
+options(ChIPseeker.ignore_1st_exon = TRUE)
+options(ChIPseeker.ignore_1st_intron = TRUE)
+options(ChIPseeker.ignore_downstream = TRUE) # put all into intergenic regions
+options(ChIPseeker.ignore_promoter_subcategory = TRUE)
+
+```
+
+## basic environment setup to run ArchR v1.0.2 or the most recent develop version
+Find **ArchR** information at <https://www.archrproject.com/index.html>
+Additional information about running **ArchR** multiomic pipeline: 
+<https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html>
+```{r}
+set.seed(1)
+addArchRThreads(threads = 100)
+addArchRGenome("hg38")
+getArchRGenome()
+```
+
+## run monocle 3 pipeline on the GeneExpressionMatrix or GeneScoreMatrix
+follow the **monocle 3** pipeline in <https://cole-trapnell-lab.github.io/monocle3/>
+
+### based on GeneExpressionMatrix
+```{r}
+## -- 1. Getting data from ArchR
+  ## 1. MAT
+expMat_ASC <- getMatrixFromProject(
+  ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="ASC")],
+  useMatrix = "GeneExpressionMatrix"
+)
+rownames(expMat_ASC) <- rowData(expMat_ASC)$name
+expMat_ASCAssay <- assay(expMat_ASC, name = colnames(expMat_ASC))
+
+  ## 2. cell_meta (need same order as the expMat)
+cellMeta_ASC <- getCellColData(ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="ASC")])[colnames(expMat_ASCAssay),]
+
+  # check data format
+    rownames(cellMeta_ASC) %>% head()
+    colnames(expMat_ASC) %>% length()
+    rownames(expMat_ASC) %>% head()
+  
+  ## 3. Gene_meta (data frame)
+geneMeta_ASC <- data.frame(rownames(expMat_ASCAssay),rownames(expMat_ASCAssay))
+colnames(geneMeta_ASC) <- c("names", "gene_short_name")
+rownames(geneMeta_ASC) <- geneMeta_ASC$names
+
+## -- 2. Make CDS monocle
+## needs to be in same orders, the colnames (matrix, then metadata are dataframes)
+cds_expMat_ASC <- new_cell_data_set(expMat_ASCAssay,
+                         cell_metadata = cellMeta_ASC,
+                         gene_metadata = geneMeta_ASC)
+
+## -- 3. Pre-process the data, clustering, learn the trag graph
+
+cds_expMat_ASC <- preprocess_cds(cds_expMat_ASC, num_dim = 50)
+  plot_pc_variance_explained(cds_expMat_ASC)
+cds_expMat_ASC <- align_cds(cds_expMat_ASC, alignment_group = "Sample") # batch effect, by samples
+cds_expMat_ASC <- reduce_dimension(cds_expMat_ASC)  ## reduce dimentionality
+  pdf(file="Plot_MonC.ArchR_C9.ASC_fig1_sampleUMAP.2.pdf", 
+     width = 3, height =3, onefile=TRUE)
+    plot_pc_variance_explained(cds_expMat_ASC)
+    plot_cells(cds_expMat_ASC, label_groups_by_cluster=FALSE,  color_cells_by = "groups", 
+               show_trajectory_graph = FALSE, label_cell_groups = FALSE) + theme(legend.position = "right") + theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, label_groups_by_cluster=FALSE,  color_cells_by = "Sample", 
+               show_trajectory_graph = FALSE, label_cell_groups = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+   dev.off() ## close
+
+# plot genes to check 
+ASC_genesMono <- c("LUZP2", "SLC7A10", "MFGE8", #GFAP low
+                   "GFAP","ID3", "AQP4", "MYOC", "ID1", "FABP7", #GFAP high
+                   "GFAP","CSTB", "VIM", "OSMR", "GSN", "GGTA1P" #Disease Associated Astrocyte (DAA) ASC signature
+                   )
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig1_1_genes_screen.pdf", 
+     width = 10, height =10, onefile=TRUE)  
+  plot_cells(cds_expMat_ASC, genes=unique(ASC_genesMono), 
+             show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+  dev.off() ## close 
+  
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig1_1_genes.pdf", 
+     width = 3, height =2, onefile=TRUE)  
+    plot_cells(cds_expMat_ASC, genes=c("GFAP"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("ARHGEF3"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("GRM3"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("CSTB"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("VIM"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("LUZP2"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("LUZP2"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    # plot genes to check
+  dev.off() ## close
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig1_1_genes_v2.pdf", 
+     width = 2, height =2, onefile=TRUE)  
+    plot_cells(cds_expMat_ASC, genes=c("GFAP"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("AQP4"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("VIM"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("GSN"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("VIM"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC, genes=c("MFGE8"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    # plot genes to check
+  dev.off() ## close  
+   
+cds_expMat_ASC <- cluster_cells(cds_expMat_ASC)
+cds_expMat_ASC <- learn_graph(cds_expMat_ASC)
+  pdf(file="Plot_MonC.ArchR_C9.ASC_fig2_tracject.pdf", 
+     width = 3, height =3, onefile=TRUE)
+    plot_cells(cds_expMat_ASC, show_trajectory_graph = FALSE,
+           color_cells_by = "type", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE,label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC,
+           color_cells_by = "type", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + theme_Pub_UMAP()
+  dev.off() ## close   
+
+##---> This graph will be used in many downstream steps, such as branch analysis and differential expression.
+###########=== END basic =================
+###########=== ###########=== ###########=== ###########=== ###########=== ###########=== 
+  pdf(file="Plot_MonC.ArchR_C9.ASC_fig3.facet_V2.pdf", 
+     width = 10, height =2, onefile=TRUE)  
+    plot_cells(cds_expMat_ASC,
+           color_cells_by = "type", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + facet_wrap(~type, nrow = 1) + theme_Pub_UMAP()
+    plot_cells(cds_expMat_ASC,
+           color_cells_by = "groups", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + facet_wrap(~groups, nrow = 1) + theme_Pub_UMAP()
+  dev.off() ## close   
+  
+###########=== ###########=== ###########=== ###########=== ###########=== 
+###########=== ###########=== ###########=== ###########=== ###########=== 
+
+#### STEP 2 #### 
+    #time_bin="C29"
+    #clusterName = "clu38"
+get_earliest_principal_node <- function(cds, time_bin="C29"){
+  cell_ids <- which(colData(cds)[, "clu38"] == time_bin)
+  closest_vertex <-
+  cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
+  root_pr_nodes <-
+    igraph::V(principal_graph(cds)[["UMAP"]])$name[as.numeric(names
+   (which.max(table(closest_vertex[cell_ids,]))))]
+
+  root_pr_nodes
+}  
+cds_expMat_ASC <- order_cells(cds_expMat_ASC, root_pr_nodes=get_earliest_principal_node(cds_expMat_ASC))
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig4_pseudotime.pdf", 
+     width = 3, height =2, onefile=TRUE)  
+      plot_cells(cds_expMat_ASC,
+           color_cells_by = "pseudotime",label_cell_groups=FALSE,
+           label_leaves=FALSE,label_branch_points=FALSE,graph_label_size=1.5) + theme_Pub_UMAP() + labs(caption  = "C29 as root")
+      plot_cells(cds_expMat_ASC,
+                 color_cells_by = "pseudotime",label_cell_groups=FALSE,
+                 label_leaves=TRUE,label_branch_points=FALSE,graph_label_size=1.5) + theme_Pub_UMAP() + labs(caption  = "C29 as root")
+    plot_cells(cds_expMat_ASC,
+           color_cells_by = "cluster", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + theme_Pub_UMAP()
+dev.off() ## close   
+
+#### then do some branch finding 
+  # > install.packages("gstat"); > install.packages("raster") -- reinstall raster 
+
+cds_gscoMat_ASC_test_res <- graph_test(cds_gscoMat_ASC, neighbor_graph="principal_graph", cores=40)
+cds_gscoMat_ASC_test_res_deg_ids <- row.names(subset(cds_gscoMat_ASC_test_res, q_value < 0.01))
+cds_gscoMat_ASC_test_res %>% subset(q_value < 0.00001) %>% arrange(q_value) # filter by 10^-5, still 8,138 rows
+
+pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig5_genes.pdf", 
+     width = 5, height =5, onefile=TRUE)  
+plot_cells(cds_gscoMat_ASC, genes=c("NEAT1", "MALAT1", "ENO1", "ESRRG"),
+           show_trajectory_graph=FALSE,
+           label_cell_groups=FALSE,
+           label_leaves=FALSE)
+plot_genes_in_pseudotime(cds_gscoMat_ASC_genes,
+                         color_cells_by="TDPgrp",
+                         min_gscor=1)
+plot_genes_in_pseudotime(cds_gscoMat_ASC_genes,
+                         color_cells_by="noTDP",
+                         min_gscor=1)
+dev.off()
+## bin 
+
+ASC_genes <- c("NEAT1", "MALAT1", "ENO1", "ESRRG", "STMN2")
+cds_gscoMat_ASC_genes <- cds_gscoMat_ASC[rowData(cds_gscoMat_ASC)$gene_short_name %in% ASC_genes,
+                       colData(cds_gscoMat_ASC)$TDPgrp %in% c("CTL","noTDP","medTDP","highTDP")]
+## plot above in the same files 
+
+
+## how to get the pseudo time matrix out ?? -- this is a table per cell and # in the trajectory things 
+cds_gscoMat_ASC_pTimeMat <- pseudotime(cds_gscoMat_ASC, reduction_method = "UMAP")
+colnames(cds_gscoMat_ASC_pTimeMat)
+
+
+plot_percent_cells_positive(cds_gscoMat_ASC_genes, group_cells_by="TDPgrp")
+
+# add pseudotime into the matrix 
+colData(cds_gscoMat_ASC)$pseudotime <- pseudotime(cds_gscoMat_ASC)
+
+colData(cds_gscoMat_ASC)$pseudotime %>% scale()
+test_df <- colData(cds_gscoMat_ASC)$pseudotime %>% as.data.frame()
+
+table(colData(cds_gscoMat_ASC)$pseuT50)
+
+colData(cds_gscoMat_ASC)$pseuT50 <- as.numeric(cut2(colData(cds_gscoMat_ASC)$pseudotime, g=50))
+
+table(pData(cds_gscoMat_ASC)$pseuT50)
+
+table(colData(cds_gscoMat_ASC)$clu38)
+
+colData(cds_gscoMat_ASC)$pseuT50_TDPgrp <- paste(colData(cds_gscoMat_ASC)$TDPgrp, colData(cds_gscoMat_ASC)$pseuT50, sep="_")
+
+# count
+cds_gscoMat_ASC_pseuT50_TDPgrp <- table(colData(cds_gscoMat_ASC)$pseuT50_TDPgrp) %>% as.data.frame()
+colnames(cds_gscoMat_ASC_pseuT50_TDPgrp) <- c("TDPgrpAll", "nucleiCt")
+
+    cds_gscoMat_ASC_pseuT50_TDPgrp$TDPgrp <- sapply(strsplit(as.character(cds_gscoMat_ASC_pseuT50_TDPgrp$TDPgrpAll), "_"), function(x) x[1])
+    cds_gscoMat_ASC_pseuT50_TDPgrp$pseuT50 <- sapply(strsplit(as.character(cds_gscoMat_ASC_pseuT50_TDPgrp$TDPgrpAll), "_"), function(x) x[2]) %>% as.numeric()
+cds_gscoMat_ASC_pseuT50_TDPgrp %>% head()
+# do the nuclei percentage 
+cds_gscoMat_ASC_pseuT50_TDPgrp <- group_by(cds_gscoMat_ASC_pseuT50_TDPgrp, TDPgrp) %>% mutate(percent = nucleiCt/sum(nucleiCt)*100) 
+    sum(cds_gscoMat_ASC_pseuT50_TDPgrp$nucleiCt) # total nuclei
+
+
+#library("ggpubr")
+
+cds_expMat_ASC_pseuT50_TDPgrp_scat <- ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="highTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, #facet.by = "TDPgrp",
+          cor.coef = TRUE, cor.method = "pearson", color = "#00AFBB", size = 3, shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 1, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei") + theme_Pub_UMAP()    
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig6_nucleiCt_time.pdf", 
+     width = 4, height =4, onefile=TRUE)      
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp, #%>% filter(TDPgrp=="highTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, facet.by = "TDPgrp", font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", font.size =1),
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() 
+dev.off()
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig6_nucleiCt_time.sep.pdf", 
+     width = 2, height =2, onefile=TRUE)      
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="CTL"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "CTLs") 
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp!="CTL"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "all_TDP") 
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="highTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "highTDP")
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="medTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "medTDP")
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="noTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "noTDP")
+dev.off()
+
+```
+
+### based on GeneScoreMatrix
+```{r}
+## -- 1. Getting data from ArchR
+  ## 1. MAT
+getAvailableMatrices(ArchR_C9)
+
+gscoMat_ASC <- getMatrixFromProject(
+  ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="ASC")],
+  useMatrix = "GeneScoreMatrix"
+)
+rownames(gscoMat_ASC) <- rowData(gscoMat_ASC)$name
+gscoMat_ASCAssay <- assay(gscoMat_ASC, name = colnames(gscoMat_ASC))
+
+  ## 2. cell_meta (need same order as the expMat)
+cellMeta_gscoASC <- getCellColData(ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="ASC")])[colnames(gscoMat_ASCAssay),]
+
+  # check data format
+    rownames(cellMeta_gscoASC) %>% head()
+    colnames(gscoMat_ASCAssay) %>% length()
+    rownames(gscoMat_ASCAssay) %>% head()
+  
+  ## 3. Gene_meta (data frame)
+gscoMeta_ASC <- data.frame(rownames(gscoMat_ASCAssay),rownames(gscoMat_ASCAssay))
+colnames(gscoMeta_ASC) <- c("names", "gene_short_name")
+rownames(gscoMeta_ASC) <- gscoMeta_ASC$names
+
+## -- 2. Make CDS monocle
+## needs to be in same orders, the colnames (matrix, then metadata are dataframes)
+cds_gscoMat_ASC <- new_cell_data_set(gscoMat_ASCAssay,
+                         cell_metadata = cellMeta_gscoASC,
+                         gene_metadata = gscoMeta_ASC)
+
+## -- 3. Pre-process the data, clustering, learn the trag graph
+
+cds_gscoMat_ASC <- preprocess_cds(cds_gscoMat_ASC, num_dim = 50)
+  plot_pc_variance_explained(cds_gscoMat_ASC)
+cds_gscoMat_ASC <- align_cds(cds_gscoMat_ASC, alignment_group = "Sample") # batch effect, by samples
+cds_gscoMat_ASC <- reduce_dimension(cds_gscoMat_ASC)  ## reduce dimentionality
+  pdf(file="Plot_MonC.ArchR_C9.gsco_ASC_fig1_sampleUMAP.2.pdf", 
+     width = 3, height =3, onefile=TRUE)
+    plot_pc_variance_explained(cds_gscoMat_ASC)
+    plot_cells(cds_gscoMat_ASC, label_groups_by_cluster=FALSE,  color_cells_by = "groups", 
+               show_trajectory_graph = FALSE, label_cell_groups = FALSE) + theme(legend.position = "right") + theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, label_groups_by_cluster=FALSE,  color_cells_by = "Sample", 
+               show_trajectory_graph = FALSE, label_cell_groups = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+   dev.off() ## close
+
+# plot genes to check 
+ASC_genesMono <- c("LUZP2", "SLC7A10", "MFGE8", #GFAP low
+                   "GFAP","ID3", "AQP4", "MYOC", "ID1", "FABP7", #GFAP high
+                   "GFAP","CSTB", "VIM", "OSMR", "GSN", "GGTA1P" #Disease Associated Astrocyte (DAA) ASC signature
+                   )
+
+pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig1_1_genes_screen.pdf", 
+     width = 10, height =10, onefile=TRUE)  
+  plot_cells(cds_gscoMat_ASC, genes=unique(ASC_genesMono), 
+             show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+  dev.off() ## close 
+  
+pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig1_1_genes.pdf", 
+     width = 3, height =2, onefile=TRUE)  
+    plot_cells(cds_gscoMat_ASC, genes=c("GFAP"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("ARHGEF3"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("GRM3"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("CSTB"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("VIM"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("LUZP2"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("LUZP2"), show_trajectory_graph = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    # plot genes to check
+  dev.off() ## close
+
+pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig1_1_genes_v2.pdf", 
+     width = 2, height =2, onefile=TRUE)  
+    plot_cells(cds_gscoMat_ASC, genes=c("GFAP"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("AQP4"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("VIM"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("GSN"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("VIM"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC, genes=c("MFGE8"), show_trajectory_graph = FALSE, 
+               label_groups_by_cluster = FALSE) + theme(legend.position = "right")+ theme_Pub_UMAP()
+    # plot genes to check
+  dev.off() ## close  
+   
+cds_gscoMat_ASC <- cluster_cells(cds_gscoMat_ASC)
+cds_gscoMat_ASC <- learn_graph(cds_gscoMat_ASC)
+  pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig2_tracject.pdf", 
+     width = 3, height =3, onefile=TRUE)
+    plot_cells(cds_gscoMat_ASC, show_trajectory_graph = FALSE,
+           color_cells_by = "type", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE,label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC,
+           color_cells_by = "type", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + theme_Pub_UMAP()
+  dev.off() ## close   
+
+###########=== END basic =================
+###########=== ###########=== ###########=== ###########=== ###########=== ###########=== 
+  pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig3.facet_V2.pdf", 
+     width = 10, height =2, onefile=TRUE)  
+    plot_cells(cds_gscoMat_ASC,
+           color_cells_by = "type", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + facet_wrap(~type, nrow = 1) + theme_Pub_UMAP()
+    plot_cells(cds_gscoMat_ASC,
+           color_cells_by = "groups", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + facet_wrap(~groups, nrow = 1) + theme_Pub_UMAP()
+  dev.off() ## close   
+  
+###########=== ###########=== ###########=== ###########=== ###########=== 
+###########=== ###########=== ###########=== ###########=== ###########=== 
+
+#### STEP 2 #### 
+  ## use problems to tell 
+    #time_bin="C29"
+    #clusterName = "clu38"
+get_earliest_principal_node <- function(cds, time_bin="C29"){
+  cell_ids <- which(colData(cds)[, "clu38"] == time_bin)
+  closest_vertex <-
+  cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
+  root_pr_nodes <-
+    igraph::V(principal_graph(cds)[["UMAP"]])$name[as.numeric(names
+   (which.max(table(closest_vertex[cell_ids,]))))]
+
+  root_pr_nodes
+}  
+cds_gscoMat_ASC <- order_cells(cds_gscoMat_ASC, root_pr_nodes=get_earliest_principal_node(cds_gscoMat_ASC))
+
+pdf(file="Plot_MonC.ArchR_C9.gscoASC_fig4_pseudotime.pdf", 
+     width = 3, height =2, onefile=TRUE)  
+      plot_cells(cds_gscoMat_ASC,
+           color_cells_by = "pseudotime",label_cell_groups=FALSE,
+           label_leaves=FALSE,label_branch_points=FALSE,graph_label_size=1.5) + theme_Pub_UMAP() + labs(caption  = "C29 as root")
+      plot_cells(cds_gscoMat_ASC,
+                 color_cells_by = "pseudotime",label_cell_groups=FALSE,
+                 label_leaves=TRUE,label_branch_points=FALSE,graph_label_size=1.5) + theme_Pub_UMAP() + labs(caption  = "C29 as root")
+    plot_cells(cds_gscoMat_ASC,
+           color_cells_by = "cluster", label_groups_by_cluster=FALSE, #label_roots = TRUE, # no root yet
+           label_leaves=FALSE, label_cell_groups = FALSE, #label_principal_points=TRUE,
+           label_branch_points=TRUE) + theme(legend.position = "right") + labs(caption  = "(black=branch point)") + theme_Pub_UMAP()
+dev.off() ## close   
+
+#### then do some branch finding 
+  # > install.packages("gstat"); > install.packages("raster") -- reinstall raster 
+
+cds_expMat_ASC_test_res <- graph_test(cds_expMat_ASC, neighbor_graph="principal_graph", cores=40)
+cds_expMat_ASC_test_res_deg_ids <- row.names(subset(cds_expMat_ASC_test_res, q_value < 0.01))
+cds_expMat_ASC_test_res %>% subset(q_value < 0.00001) %>% arrange(q_value) # filter by 10^-5, still 8,138 rows
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig5_genes.pdf", 
+     width = 5, height =5, onefile=TRUE)  
+plot_cells(cds_expMat_ASC, genes=c("NEAT1", "MALAT1", "ENO1", "ESRRG"),
+           show_trajectory_graph=FALSE,
+           label_cell_groups=FALSE,
+           label_leaves=FALSE)
+plot_genes_in_pseudotime(cds_expMat_ASC_genes,
+                         color_cells_by="TDPgrp",
+                         min_expr=1)
+plot_genes_in_pseudotime(cds_expMat_ASC_genes,
+                         color_cells_by="noTDP",
+                         min_expr=1)
+dev.off()
+## bin 
+
+ASC_genes <- c("NEAT1", "MALAT1", "ENO1", "ESRRG", "STMN2")
+cds_expMat_ASC_genes <- cds_expMat_ASC[rowData(cds_expMat_ASC)$gene_short_name %in% ASC_genes,
+                       colData(cds_expMat_ASC)$TDPgrp %in% c("CTL","noTDP","medTDP","highTDP")]
+## plot above in the same files 
+
+
+## how to get the pseudo time matrix out ?? -- this is a table per cell and # in the trajectory things 
+cds_expMat_ASC_pTimeMat <- pseudotime(cds_expMat_ASC, reduction_method = "UMAP")
+colnames(cds_expMat_ASC_pTimeMat)
+
+
+plot_percent_cells_positive(cds_expMat_ASC_genes, group_cells_by="TDPgrp")
+
+# add pseudotime into the matrix 
+colData(cds_expMat_ASC)$pseudotime <- pseudotime(cds_expMat_ASC)
+
+colData(cds_expMat_ASC)$pseudotime %>% scale()
+test_df <- colData(cds_expMat_ASC)$pseudotime %>% as.data.frame()
+
+table(colData(cds_expMat_ASC)$pseuT50)
+
+colData(cds_expMat_ASC)$pseuT50 <- as.numeric(cut2(colData(cds_expMat_ASC)$pseudotime, g=50))
+
+colData(cds_expMat_ASC)$pseuT50_TDPgrp <- paste(colData(cds_expMat_ASC)$TDPgrp, colData(cds_expMat_ASC)$pseuT50, sep="_")
+
+# count
+cds_expMat_ASC_pseuT50_TDPgrp <- table(colData(cds_expMat_ASC)$pseuT50_TDPgrp) %>% as.data.frame()
+colnames(cds_expMat_ASC_pseuT50_TDPgrp) <- c("TDPgrpAll", "nucleiCt")
+
+    cds_expMat_ASC_pseuT50_TDPgrp$TDPgrp <- sapply(strsplit(as.character(cds_expMat_ASC_pseuT50_TDPgrp$TDPgrpAll), "_"), function(x) x[1])
+    cds_expMat_ASC_pseuT50_TDPgrp$pseuT50 <- sapply(strsplit(as.character(cds_expMat_ASC_pseuT50_TDPgrp$TDPgrpAll), "_"), function(x) x[2]) %>% as.numeric()
+cds_expMat_ASC_pseuT50_TDPgrp %>% head()
+# do the nuclei percentage 
+cds_expMat_ASC_pseuT50_TDPgrp <- group_by(cds_expMat_ASC_pseuT50_TDPgrp, TDPgrp) %>% mutate(percent = nucleiCt/sum(nucleiCt)*100) 
+    sum(cds_expMat_ASC_pseuT50_TDPgrp$nucleiCt) # total nuclei
+
+
+#library("ggpubr")
+
+cds_expMat_ASC_pseuT50_TDPgrp_scat <- ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="highTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, #facet.by = "TDPgrp",
+          cor.coef = TRUE, cor.method = "pearson", color = "#00AFBB", size = 3, shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 1, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei") + theme_Pub_UMAP()    
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig6_nucleiCt_time.pdf", 
+     width = 4, height =4, onefile=TRUE)      
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp, #%>% filter(TDPgrp=="highTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, facet.by = "TDPgrp", font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", font.size =1),
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() 
+dev.off()
+
+pdf(file="Plot_MonC.ArchR_C9.ASC_fig6_nucleiCt_time.sep.pdf", 
+     width = 2, height =2, onefile=TRUE)      
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="CTL"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "CTLs") 
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp!="CTL"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "all_TDP") 
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="highTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "highTDP")
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="medTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "medTDP")
+ggscatter(cds_expMat_ASC_pseuT50_TDPgrp %>% filter(TDPgrp=="noTDP"), 
+          x = "pseuT50", y = "percent", 
+          add = "reg.line", conf.int = TRUE, font.label = c(1, "plain"),
+          cor.coef = TRUE, cor.coeff.args = list(method = "pearson", label.x = 1, label.sep = "\n", digits = 2),cor.coef.size = 3, 
+          color = "#00AFBB", size = 1, #shape=16, # Points color, shape and size
+          add.params = list(color = "black",size = 0.5, fill = "lightgrey"), # Customize reg. line
+          xlab = "pseudotime", ylab = "Proprotions of nuclei (%)") + theme_Pub_UMAP() + labs(title  = "noTDP")
+dev.off()
+
+```

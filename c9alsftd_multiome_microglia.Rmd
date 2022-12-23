@@ -1,0 +1,1079 @@
+---
+title: "c9alsftd_multiome - Neuronal clusters analysis - WGCNA, deconvolutions, etc"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## Load required packages and graphical set up
+```{r}
+library(ArchR)
+library(parallel)
+library(monocle3)
+library(tidyselect)
+library(tidygraph)
+library(tidytree
+library(tidyr
+library(tidyverse)
+library(parallel)
+library(monocle3)
+library(cicero)
+
+# https://rpubs.com/Koundy/71792
+# remove all bold text
+theme_Publication <- function(base_size=7, base_family="sans") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black", size = 0.2),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(t = 0, unit='cm'),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text()
+          ))
+      
+}
+
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+## loading packages
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) # Need to run for the right genome version. 
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+library(org.Hs.eg.db)
+library(ggupset)
+library(ReactomePA)
+library(clusterProfiler) # the GO part
+library(grid)
+library(gghighlight)
+library(DOSE)
+library(ggplot2)
+library(cowplot)
+library(wesanderson)
+library(ReactomePA)
+library("pathview")
+library(annotate)
+library(GenomicFeatures)
+
+options(ChIPseeker.downstreamDistance = 3000) # this can be used to defined the options. 
+options(ChIPseeker.ignore_1st_exon = TRUE)
+options(ChIPseeker.ignore_1st_intron = TRUE)
+options(ChIPseeker.ignore_downstream = TRUE) # put all into intergenic regions
+options(ChIPseeker.ignore_promoter_subcategory = TRUE)
+
+```
+
+## basic environment setup to run ArchR v1.0.2 or the most recent develop version
+Find **ArchR** information at <https://www.archrproject.com/index.html>
+Additional information about running **ArchR** multiomic pipeline: 
+<https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html>
+```{r}
+set.seed(1)
+addArchRThreads(threads = 100)
+addArchRGenome("hg38")
+getArchRGenome()
+```
+
+## Changes proportions in microglia clusters
+```{r}
+ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="MG")]
+
+MG_typeTDP_ct <- table(ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="MG")]$TypeTDP) %>% as.data.frame()
+colnames(MG_typeTDP_ct) <- c("name", "MG_ct")
+
+MG_typeTDP_ct$condition <-  sapply(strsplit(MG_typeTDP_ct$name %>% as.character(), "_"), function(x) x[2])
+  
+MG_typeTDP_ct <- merge(MG_typeTDP_ct, ArchR_C9_groups_ct, by.all="condition")
+MG_typeTDP_ct$percent <- MG_typeTDP_ct$MG_ct / MG_typeTDP_ct$all_ct
+
+## then how about the bigger one 
+MG_patientTDPType_ct <- table(ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="MG")]$patientTDPType) %>% as.data.frame()
+colnames(MG_patientTDPType_ct) <- c("name", "MG_ct")
+MG_patientTDPType_ct$ID <- gsub("MG_","",MG_patientTDPType_ct$name)
+
+ArchR_C9$patientTDP <- paste(sapply(strsplit(ArchR_C9$patientTDPType %>% as.character(), "_"), function(x) x[2]),
+                             sapply(strsplit(ArchR_C9$patientTDPType %>% as.character(), "_"), function(x) x[3]),
+                             sapply(strsplit(ArchR_C9$patientTDPType %>% as.character(), "_"), function(x) x[4]),
+                             sapply(strsplit(ArchR_C9$patientTDPType %>% as.character(), "_"), function(x) x[5]),sep="_")
+
+ArchR_C9_patientTDP_ct <- table(ArchR_C9$patientTDP)  %>% as.data.frame()
+colnames(ArchR_C9_patientTDP_ct) <- c("ID", "all_ct")
+
+MG_patientTDPType_ct <- merge(MG_patientTDPType_ct, ArchR_C9_patientTDP_ct, by.all="ID")
+
+MG_patientTDPType_ct$percent <- MG_patientTDPType_ct$MG_ct / MG_patientTDPType_ct$all_ct
+
+MG_patientTDPType_ct$group <- sapply(strsplit(MG_patientTDPType_ct$ID %>% as.character(), "_"), function(x) x[1])
+
+### make the first point that the proportions of MG is about the same. 
+  # Default method = "kruskal.test" for multiple groups
+
+pdf(file="MG_boxplot_percentage.pdf", 
+     width = 2, height =2.2, onefile=TRUE)  
+ggplot(MG_patientTDPType_ct, aes(x=group, y=percent)) + 
+  geom_boxplot(outlier.shape = NA, color="black")+ ylim(0,0.18)+
+  #geom_point(aes(x=all, y=rho, color=group), position = "jitter") +
+  geom_jitter(aes(x=group, y=percent, color=group), width = 0.18)+ stat_compare_means(size=2) +
+  #stat_compare_means(ref.group = "CTL", label = "p.signif",hide.ns = FALSE, size=1) +
+stat_pvalue_manual(size=2,
+  dunnTest_MG, x = "group2", y.position = 0.15,
+  label = "p.signif",
+  position = position_dodge(0.8)
+)+
+  theme_Publication()
+dev.off()
+
+pdf(file="MG_boxplot_percentage_v2.pdf", 
+     width = 1.6, height =2, onefile=TRUE)  
+ggplot(MG_patientTDPType_ct, aes(x=group, y=percentMG_all)) + 
+  geom_boxplot(outlier.shape = NA, color="black", size = 0.15, width = 0.8)+ ylim(0,0.18)+
+  #geom_point(aes(x=all, y=rho, color=group), position = "jitter") +
+  geom_jitter(aes(x=group, y=percentMG_all, color=group), width = 0.1, size=0.5)+ stat_compare_means(size=2) +
+  #stat_compare_means(ref.group = "CTL", label = "p.signif",hide.ns = FALSE, size=1) +
+stat_pvalue_manual(size=2,
+  dunnTest_MG, x = "group2", y.position = 0.15,
+  label = "p.signif",
+  position = position_dodge(0.8)
+)+
+  theme_Publication()
+dev.off()
+
+pdf(file="MG_boxplot_percentage_eachClu_2.pdf", 
+     width = 1.5, height =4, onefile=TRUE)  
+ggplot(MG_clu_patientTDPType_ct, aes(x=group.x, y=percent_Eachclu)) + facet_grid(clu ~ ., scales = "free") +
+  geom_boxplot(outlier.shape = NA, color="black", size = 0.15, width = 0.8)+ #ylim(0,0.18)+
+  #geom_point(aes(x=all, y=rho, color=group), position = "jitter") +
+  geom_jitter(aes(x=group.x, y=percent_Eachclu, color=group.x), width = 0.1, size=0.5)+ stat_compare_means(size=2) +
+  scale_y_continuous(expand = expansion(mult = c(0.1, 0.2))) +
+  #stat_compare_means(ref.group = "CTL", label = "p.signif",hide.ns = FALSE, size=1) +
+stat_pvalue_manual(size=2,
+  dunnTest_MGclu, x = "group2clu", y.position = 0.08,
+  label = "p.signif",
+  position = position_dodge(0.8))+
+  theme_Publication()
+dev.off()
+
+compare_means(percent ~ group,  data = MG_patientTDPType_ct, method = "kruskal.test")
+
+library(FSA)
+dunnTest_MG <- dunnTest(percent ~ group,  data = MG_patientTDPType_ct, method = "bh", list=TRUE)$res %>% as.data.frame()
+  dunnTest_MG$group1 <- sapply(strsplit(dunnTest_MG$Comparison %>% as.character(), " - "), function(x) x[1])
+  dunnTest_MG$group2 <- sapply(strsplit(dunnTest_MG$Comparison %>% as.character(), " - "), function(x) x[2])
+  dunnTest_MG$p.signif <- "ns"
+  dunnTest_MG %>% dplyr::filter(group1=="CTL")
+
+dunnTest_MG
+
+```
+
+## Plot MG speciic UMAP and related analysis 
+```{r}
+### plotting -- just the MG                     
+ArchR_C9.UMAP3.highTDP_ASC_genes.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="MG")], 
+              embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = highTDP_ASC_genes, imputeWeights = addImputeWeights(ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="MG")]))
+    plotPDF(plotList = ArchR_C9.UMAP3.highTDP_ASC_genes.GEp, name = "ArchR_C9.UMAP3.highTDP_ASC_genes.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)  
+## high TDP
+ArchR_C9.UMAP3.highTDP_ASC_genes_highTDP.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="highTDP" & ArchR_C9$type2name =="ASC")], highlightCells= ArchR_WT.BF3_only,
+              embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = highTDP_ASC_genes, 
+              imputeWeights = getImputeWeights(ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="highTDP" | ArchR_C9$type2name =="ASC")]))
+    plotPDF(plotList = ArchR_C9.UMAP3.highTDP_ASC_genes_highTDP.GEp, name = "ArchR_C9.UMAP3.highTDP_ASC_genes_highTDP.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)        
+## CTL
+ArchR_C9.UMAP3.highTDP_ASC_genes_CTL.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="CTL" & ArchR_C9$type2name =="ASC")], 
+              embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = highTDP_ASC_genes[1:5], 
+              imputeWeights = getImputeWeights(ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="CTL" & ArchR_C9$type2name =="ASC")]))
+    plotPDF(plotList = ArchR_C9.UMAP3.highTDP_ASC_genes_CTL.GEp, name = "ArchR_C9.UMAP3.highTDP_ASC_genes_CTL.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+    
+    
+ArchR_C9.UMAP3.highTDP_ASC_genes_medTDP.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="medTDP"| ArchR_C9$type2name =="ASC")], 
+              embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = highTDP_ASC_genes, imputeWeights = getImputeWeights(ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="medTDP"| ArchR_C9$type2name =="ASC")]))
+    plotPDF(plotList = ArchR_C9.UMAP3.highTDP_ASC_genes_medTDP.GEp, name = "ArchR_C9.UMAP3.highTDP_ASC_genes_medTDP.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)  
+ArchR_C9.UMAP3.highTDP_ASC_genes_noTDP.GEp <- 
+plotEmbedding(ArchRProj = ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="noTDP"| ArchR_C9$type2name =="ASC")], 
+              embedding = "allcells-combined-Ham-UMAP3", colorBy = "GeneExpressionMatrix", continuousSet = "solarExtra", 
+              name = highTDP_ASC_genes, imputeWeights = getImputeWeights(ArchR_C9[BiocGenerics::which(ArchR_C9$TDPgrp =="noTDP"| ArchR_C9$type2name =="ASC")]))
+    plotPDF(plotList = ArchR_C9.UMAP3.highTDP_ASC_genes_noTDP.GEp, name = "ArchR_C9.UMAP3.highTDP_ASC_genes_noTDP.GEp.pdf", 
+            ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+  #### Jus the MG clusters
+  MG_spec_genes <- 
+    c(# this is about C2, the proinflammatory M1 microglia
+       "CD80", "CD86", # antigen presenting
+      "CCL2","CCL3", #"CCL4", # reactive chemokines
+      "Il1a", "Il1b", "IL18", # interleukin
+      "IRF8", "C3", "C1QA", "C1QB", "C1QC",  # the complement system
+      "BDNF", "GDNF", "NTS", "NGF", # related to C36 and C37
+      "UBE4B", # 36 cell cycles
+      "CR1", "CR2", # complement receptor 1 and 2, specific to C36
+      "HTR2A", "HTR5A", "HTR1D", "HTR1E", "HTR6", "HTR1A", "HTR1B", # C37 seretonine receptors
+      "VCAN", "GFAP", #C38 - GFAP transitioning?
+      "PAX6", "F3" # glia cell fate to C38
+      )
+
+MG_c2genes <-c(# this is about C2, the proinflammatory M1 microglia
+       "CD80", "CD86", # antigen presenting
+      "CCL2","CCL3", #"CCL4", # reactive chemokines
+      "Il1a", "Il1b", "IL18", # interleukin
+      "IRF8", "C3", "C1QA", "C1QB", "C1QC") 
+
+MG_c36genes <- 
+    c("GDNF", "NTS",# related to C36 and C37
+      "UBE4B", # 36 cell cycles
+      "CR1", "CR2")
+MG_c37genes <- 
+    c("HTR2A", "HTR5A", "HTR1D", "HTR1E", "HTR6", "HTR1A", "HTR1B", # C37 seretonine receptors
+      "BDNF", "NGF")
+MG_c38genes <- 
+    c("VCAN", "GFAP", #C38 - GFAP transitioning?
+      "PAX6", "F3") # glia cell fate to C38
+
+####
+c9MG_features <- list(
+  MG_c2 = MG_c2genes,
+  MG_c36 = MG_c36genes,
+  MG_c37 = MG_c37genes,
+  MG_c38 = MG_c38genes
+)
+MGmodGS.listP <- paste("modGS.",names(c9MG_features), sep="")
+
+#### add modules gene score
+ArchR_C9_MG <- addModuleScore(ArchR_C9_MG, features = c9MG_features, useMatrix = "GeneScoreMatrix", name="modGS")
+
+ArchR_C9_MG <-addImputeWeights(ArchR_C9_MG, reducedDims = "allcells-combined-Ham")
+
+ArchR_C9_MG_modGSp2 <-plotEmbedding(ArchR_C9_MG, embedding = "allcells-combined-Ham-UMAP3", 
+                                  #alpha = 0.8,#baseSize=0, 
+                             size =2, #plotAs = "points", #defaultColor = "grey95", 
+                             continuousSet = "solarExtra",
+                             ratioYX=1,
+                             name = MGmodGS.listP,
+                             imputeWeights = getImputeWeights(ArchR_C9_MG),
+                             bgWidth=1.2, labelSize=0)
+
+ArchR_C9_MG_modGSp <-  plotEmbedding(ArchR_C9_MG, embedding = "allcells-combined-Ham-UMAP3", name=MGmodGS.listP, imputeWeights = getImputeWeights(ArchR_C9_MG))
+
+## this is better
+  plotPDF(plotList = ArchR_C9_MG_modGSp, name = "ArchR_C9_MG_modGS.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+pdf(file="ArchR_C9.UMAP_MG_spec_genes.GSp_2.pdf", 
+     width = 2, height =2, onefile=TRUE)
+  ## Plot it:
+ArchR_C9_MG_modGSp2
+dev.off() ## close
+
+  ### plot into manual arranged PDF
+pdf(file="ArchR_C9.UMAP_MG_spec_genes.GSp_2.pdf", 
+     width = 15, height =6.2, onefile=TRUE)
+  ## Plot it: Just the samples 
+      ggAlignPlots(plotList=c(ArchR_C9_MG_modGSp[1],ArchR_C9_MG_modGSp[2],ArchR_C9_MG_modGSp[3],ArchR_C9_MG_modGSp[4]), 
+                   type ="h", title="MG")
+dev.off() ## close 
+
+```
+
+## Analysis of cell-cycle scoring and regression
+The analysis was performed following the default vignette in Seurat (100) with the list of cell cycle markers (101). The gene expression matrix was extracted from ArchR’s ArchRProject to create the Seurat object before using Seurat’s CellCycleScoring(). 
+```{r}
+
+cc.genes <- readRDS("cc.genes.rds")
+cc.genes.updated.2019 <- readRDS("cc.genes.updated.2019.rds")
+
+## the list 
+$s.genes
+#  [1] "MCM5"     "PCNA"     "TYMS"     "FEN1"     "MCM2"     "MCM4"     "RRM1"     "UNG"      "GINS2"    "MCM6"     "CDCA7"    "DTL"      "PRIM1"   
+# [14] "UHRF1"    "MLF1IP"   "HELLS"    "RFC2"     "RPA2"     "NASP"     "RAD51AP1" "GMNN"     "WDR76"    "SLBP"     "CCNE2"    "UBR7"     "POLD3"   
+# [27] "MSH2"     "ATAD2"    "RAD51"    "RRM2"     "CDC45"    "CDC6"     "EXO1"     "TIPIN"    "DSCC1"    "BLM"      "CASP8AP2" "USP1"     "CLSPN"   
+# [40] "POLA1"    "CHAF1B"   "BRIP1"    "E2F8"    
+
+$g2m.genes
+#  [1] "HMGB2"   "CDK1"    "NUSAP1"  "UBE2C"   "BIRC5"   "TPX2"    "TOP2A"   "NDC80"   "CKS2"    "NUF2"    "CKS1B"   "MKI67"   "TMPO"    "CENPF"  
+# [15] "TACC3"   "FAM64A"  "SMC4"    "CCNB2"   "CKAP2L"  "CKAP2"   "AURKB"   "BUB1"    "KIF11"   "ANP32E"  "TUBB4B"  "GTSE1"   "KIF20B"  "HJURP"  
+# [29] "CDCA3"   "HN1"     "CDC20"   "TTK"     "CDC25C"  "KIF2C"   "RANGAP1" "NCAPD2"  "DLGAP5"  "CDCA2"   "CDCA8"   "ECT2"    "KIF23"   "HMMR"   
+# [43] "AURKA"   "PSRC1"   "ANLN"    "LBR"     "CKAP5"   "CENPE"   "CTCF"    "NEK2"    "G2E3"    "GAS2L3"  "CBX5"    "CENPA" 
+
+##load list of gene s
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+# Create our Seurat object and complete the initalization steps
+marrow <- CreateSeuratObject(counts = exp.mat)
+marrow <- NormalizeData(marrow)
+marrow <- FindVariableFeatures(marrow, selection.method = "vst")
+marrow <- ScaleData(marrow, features = rownames(marrow))
+
+MG_seu_dim15 <- CellCycleScoring(MG_seu_dim15, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+
+DimHeatmap(MG_seu_dim15, dims = c(8, 10))
+
+# view cell cycle scores and phase assignments
+head(MG_seu_dim15[[]])
+
+RidgePlot(MG_seu_dim15, features = c("CTCF", "TOP2A", "MCM6", "MKI67"), ncol = 2)
+
+MG_seu_dim15 <- RunPCA(MG_seu_dim15, reduction.name = "ccPCA", features = c(s.genes, g2m.genes))
+DimPlot(MG_seu_dim15)
+
+  VlnPlot(MG_seu_dim15, features = c(s.genes, g2m.genes), ncol = 3)
+
+VlnPlot(MG_WGCNA,
+            features = unique(modules$module)%>% as.character(),
+            group.by = 'TypeTDP',ncol = 3,
+            pt.size = 0 # don't show actual data points
+          ) +geom_boxplot(width=.25, fill='white')+xlab('') + ylab('hME') + NoLegend() +
+        stat_compare_means(aes(label = ..p.signif..),method = "t.test", ref.group = "MG_CTL")
+
+addModuleScore(
+  ArchRProj = ArchR_C9_MG,
+  useMatrix = "Ge",
+  name = "Module",
+  features = NULL,
+  nBin = 25,
+  nBgd = 100,
+  seed = 1,
+  threads = getArchRThreads(),
+  logFile = createLogFile("addModuleScore")
+)
+
+ArchArchR_C9_MGR_C9 <-addImputeWeights(ArchR_C9_MG, reducedDims = "allcells-combined-Ham")  
+
+ArchR_C9_MG <- addModuleScore(ArchR_C9_MG, features = cell.cycles, useMatrix = "GeneScoreMatrix", name="ccycle")
+
+ArchR_C9_MG <-addImputeWeights(ArchR_C9_MG, reducedDims = "allcells-combined-Ham")  
+
+ccycle_modGPp <- c("ccycle.s", "ccycle.g2m")
+
+ArchR_C9_MG_ccycleMod <- 
+  plotEmbedding(ArchR_C9_MG, embedding = "allcells-combined-Ham-UMAP3", name=ccycle_modGPp, imputeWeights = getImputeWeights(ArchR_C9_MG))
+  plotPDF(plotList = ArchR_C9_MG_ccycleMod, name = "ArchR_C9_MG_ccycleMod.modGPp.UMAP.pdf", 
+        ArchRProj = ArchR_C9, addDOC = TRUE, width = 5, height = 5)
+
+ArchR_C9_MG_ccycleMod <-plotEmbedding(ArchR_C9_MG, embedding = "allcells-combined-Ham-UMAP3", 
+                                  alpha = 0.8,#baseSize=0, 
+                             size =1.5, plotAs = "points", #defaultColor = "grey95", 
+                                       colorBy = "cellColData", name = "clu38", #discreteSet = "paired",
+                             pal=col.MG,  ratioYX=1,   
+                             bgWidth=1.2, labelSize=0, highlightCells= ArchR_C9.MG_only)
+
+pdf(file="UMAP_ArchR_C9.MGsOnly_v2.pdf", 
+     width = 3, height =3)
+  ## Plot it:
+ArchR_C9.MGsOnly
+dev.off() ## close
+
+
+## solving issues -- remove the missign genes. 
+  cell.cycles <- list("s"=s.genes[!s.genes %in% NOTin],
+                   "g2m"=g2m.genes[!g2m.genes %in% NOTin])
+  ## all the genes in teh GeneScoreMatrix
+allFeatures <- getFeatures(ArchRProj = ArchR_C9_MG, useMatrix = "GeneScoreMatrix")
+feature <- list("s"=s.genes, "g2m"=g2m.genes)
+features <- unlist(features)
+NOTin <- features[which(features %ni% allFeatures)] %>% as.character()  ## notin
+NOTin
+     s15    g2m16    g2m30 
+"MLF1IP" "FAM64A"    "HN1"
+factor(x = MG_seu_dim15@ident, levels = my_levels)
+
+## set cluster levels 
+MG_seu_dim15@meta.data$clu38 <- factor(x = MG_seu_dim15@meta.data$clu38, levels = clu38_levels)
+
+## build the tree thing
+BuildClusterTree(object = MG_seu_dim15, 
+                 genes.use = c("CTCF"), 
+                 do.plot = TRUE, 
+                 do.reorder = TRUE, 
+                 reorder.numeric = TRUE,
+                 show.progress = TRUE)
+
+
+clu38_levels <- c("C2", "C36", "C37", "C38")
+
+### then try scatter plot 
+p1 <- FeatureScatter(object = MG_seu_dim15, feature1 =c("S.Score", "G2M.Score")[1], feature2 = c("S.Score", "G2M.Score")[2], 
+               group.by ="clu38",  pt.size = 0.1) + facet_wrap(~colors) + scale_color_manual(values= col.MG) +
+  labs(title="MG cluster specific",x ="S phase score", y = "G2/M phase score")+theme_Publication()+
+  theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank()
+)
+# +stat_cor(method = "pearson") 
+p2 <- FeatureScatter(object = MG_seu_dim15, feature1 =c("S.Score", "G2M.Score")[1], feature2 = c("S.Score", "G2M.Score")[2],
+                     group.by ="TypeTDP", pt.size = 0.1) + facet_wrap(~colors) + #scale_color_manual(values= wes_palette("FantasticFox1", n = 4))+
+  labs(title="TDP group specific",x ="S phase score", y = "G2/M phase score")+theme_Publication()+
+  theme(
+  strip.background = element_blank(),
+  strip.text.x = element_blank()
+)
+
+
+pdf(file="MG_cell cycle plots.pdf", 
+     width = 4, height =3)
+  ## Plot it:
+ggarrange(p1, p2, #labels = c("A", "B"),
+          common.legend = FALSE, legend = "bottom")
+dev.off() ## close
+
+
+####
+colnames(MG_seu_dim15@meta.data)
+table(MG_seu_dim15$Phase + MG_seu_dim15$clu38)
+
+MG_seu_dim15$PhaseClu <- paste(MG_seu_dim15$clu38, MG_seu_dim15$Phase, sep="_")
+MG_seu_dim15_PhaseClu <- table(MG_seu_dim15$PhaseClu) %>% as.data.frame()
+colnames(MG_seu_dim15_PhaseClu) <- c("name", "ct")
+MG_seu_dim15_PhaseClu$clu <- sapply(strsplit(MG_seu_dim15_PhaseClu$name %>% as.character(), "_"), function(x) x[1])
+  MG_seu_dim15_PhaseClu$phase <- sapply(strsplit(MG_seu_dim15_PhaseClu$name %>% as.character(), "_"), function(x) x[2])
+
+  
+MG_typeTDP_ct <- merge(MG_typeTDP_ct, ArchR_C9_groups_ct, by.all="condition")
+MG_typeTDP_ct$percent <- MG_typeTDP_ct$MG_ct / MG_typeTDP_ct$all_ct
+
+  
+  
+ggplot(MG_seu_dim15_PhaseClu,aes(x = clu,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity")
+
+### 
+MG_seu_dim15$PhasTDPgrpe <- paste(MG_seu_dim15$TDPgrp, MG_seu_dim15$Phase, sep="_")
+MG_seu_dim15_PhasTDPgrpe <- table(MG_seu_dim15$PhasTDPgrpe) %>% as.data.frame()
+colnames(MG_seu_dim15_PhasTDPgrpe) <- c("name", "ct")
+MG_seu_dim15_PhasTDPgrpe$clu <- sapply(strsplit(MG_seu_dim15_PhasTDPgrpe$name %>% as.character(), "_"), function(x) x[1])
+  MG_seu_dim15_PhasTDPgrpe$phase <- sapply(strsplit(MG_seu_dim15_PhasTDPgrpe$name %>% as.character(), "_"), function(x) x[2])
+ggplot(MG_seu_dim15_PhasTDPgrpe,aes(x = clu,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity")
+
+### 
+MG_seu_dim15$Phaseclu38TDP <- paste(MG_seu_dim15$clu38TDP, MG_seu_dim15$Phase, sep="_")
+MG_seu_dim15_Phaseclu38TDP <- table(MG_seu_dim15$Phaseclu38TDP) %>% as.data.frame()
+colnames(MG_seu_dim15_Phaseclu38TDP) <- c("name", "ct")
+MG_seu_dim15_Phaseclu38TDP$clu <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[1])
+  MG_seu_dim15_Phaseclu38TDP$type <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[2])
+    MG_seu_dim15_Phaseclu38TDP$phase <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[3])
+
+    
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = type,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") 
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = type,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~clu)
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = clu,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~type)
+
+MG_seu_dim15$Phaseclu38TDP <- paste(MG_seu_dim15$clu38IDtype, MG_seu_dim15$Phase, sep="_")
+MG_seu_dim15_Phaseclu38TDP <- table(MG_seu_dim15$Phaseclu38TDP) %>% as.data.frame()
+colnames(MG_seu_dim15_Phaseclu38TDP) <- c("name", "ct")
+MG_seu_dim15_Phaseclu38TDP$clu <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[1])
+  MG_seu_dim15_Phaseclu38TDP$type <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[2])
+    MG_seu_dim15_Phaseclu38TDP$rep <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[3])
+    MG_seu_dim15_Phaseclu38TDP$phase <- sapply(strsplit(MG_seu_dim15_Phaseclu38TDP$name %>% as.character(), "_"), function(x) x[6])
+    MG_seu_dim15_Phaseclu38TDP$sample <- paste(MG_seu_dim15_Phaseclu38TDP$type, MG_seu_dim15_Phaseclu38TDP$rep, se="-")
+
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = type,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") 
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = type,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~clu)
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = clu,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~type)
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = sample,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~clu)    
+  
+pdf(file="MG_cell cycle plots_percentage_multiple.pdf", 
+     width = 5, height =5, onefile=TRUE)
+  ## Plot it:
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = type,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") 
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = type,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~clu)
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = clu,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~type)
+ggplot(MG_seu_dim15_Phaseclu38TDP,aes(x = sample,y=ct, fill = phase)) + 
+    geom_bar(position = "fill", stat="identity") + facet_wrap(~clu)    
+dev.off() ## close
+
+## just se the cluster per panel one for the figure
+col_phase <- c("G1"=wes_palette("Royal1")[1], "G2M"=wes_palette("Royal1")[2],
+               "S"=wes_palette("Royal1")[4], "Undecided"=wes_palette("Royal1")[3])
+
+pdf(file="MG_cell cycle plots_percentage.pdf", 
+     width = 2.8, height =2, onefile=TRUE)
+  ## Plot it:## exclude undecided (unassigned)
+ggplot(MG_seu_dim15_Phaseclu38TDP %>% dplyr::filter(phase!="Undecided"),aes(x = type,y=ct, fill = phase)) + scale_fill_manual(values = col_phase)+
+    geom_bar(position = "fill", stat="identity") + facet_grid(cols = vars(clu))+theme_Publication()+
+  ylab("proportions(%)")+xlab("")+theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 0.5))
+ dev.off() ## close
+ 
+ unique(MG_seu_dim15_Phaseclu38TDP$phase)
+ 
+ wes_palette("Royal1")[1]
+ 
+ mycolors <- c("blue", "red", "grey")
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+## labels
+fGenes_C2_MG_vnoTDP.noflt$label <- NA
+## this will label specific genes
+C2_vnoTDP_DEG <- c("UBB", "UBC","HLA-DRB1",
+                   "RAD52", "CENPF", "MKI67", "LRP1")
+fGenes_C2_MG_vnoTDP.noflt[fGenes_C2_MG_vnoTDP.noflt$name %in% C2_vnoTDP_DEG,]$label <- 
+  fGenes_C2_MG_vnoTDP.noflt[fGenes_C2_MG_vnoTDP.noflt$name %in% C2_vnoTDP_DEG,]$name
+
+
+# Re-plot but this time color the points with "diffexpressed"
+pdf(file="fGenes_C2_MG_vnoTDP.volcano.pdf", 
+     width = 2, height =2, onefile=TRUE)
+ggplot(data=fGenes_C2_MG_vnoTDP.noflt %>% dplyr::filter(seqnames !="chrX"), 
+            aes(x=Log2FC, y=-log10(FDR), col=DEG, label=label)) + geom_point(alpha = 1, size=0.4) + theme_minimal()+
+  geom_text_repel(box.padding = 0.5, max.overlaps = Inf, size=2.2, segment.size=0.1, force_pull=2)+
+  scale_colour_manual(values = mycolors)+theme_Publication()+
+  ylab(proportions(%))+xlab("")
+dev.off() ## close
+ 
+```
+
+## Differential peak comparison in each of the four MG clusters
+Enriched motifs
+```{r}
+  # if log2Foldchange > 0.6 and pvalue < 0.05, set as "UP" 
+de$diffexpressed[de$log2FoldChange > 0.6 & de$pvalue < 0.05] <- "UP"
+# if log2Foldchange < -0.6 and pvalue < 0.05, set as "DOWN"
+de$diffexpressed[de$log2FoldChange < -0.6 & de$pvalue < 0.05] <- "DOWN"
+
+fPeaks_all_comp_list27$DAR <- ""
+fPeaks_all_comp_list27$DAR[as.numeric(fPeaks_all_comp_list27$Log2FC)>0] <- "UP"
+fPeaks_all_comp_list27$DAR[as.numeric(fPeaks_all_comp_list27$Log2FC)<0] <- "DOWN"
+
+fPeak_ct <- fPeaks_all_comp_list27 %>% count(types, DAR)
+
+fPeak_ct$clu <- sapply(strsplit(fPeak_ct$types %>% as.character(), "_"), function(x) x[1])
+fPeak_ct$type <- sapply(strsplit(fPeak_ct$types %>% as.character(), "_"), function(x) x[2])
+fPeak_ct$TDPgrp <- sapply(strsplit(fPeak_ct$types %>% as.character(), "_"), function(x) x[3])
+
+# the fPeaks dir, these RDS are the result of getMarkerFeatures(), below are examples 
+    # fPeaks_vnoTDP <- getMarkerFeatures(
+    #   ArchRProj = ArchR_C9, 
+    #   useMatrix = "PeakMatrix",
+    #   groupBy = "clu38TDP",testMethod = "wilcoxon",bias = c("TSSEnrichment", "log10(nFrags)"),
+    #   useGroups = noTDP,bgdGroups = CTL)
+
+  dir.create(fPeaks_dir, recursive = TRUE)
+
+fPeaks_dirFDR_motifs <- "FDR_motifs"
+
+clu38TDP_compo_MG <- clu38TDP_compo %>% dplyr::filter(group=="MG")
+
+U <- 2
+clu38TDP_compo_MG$cluster[U]
+## plot the peaks -- it's 4 MG clusters
+for (U in 3) {
+  print(paste("START with--U --",U, sep=""))
+    TYPE <- gsub("-", "_",clu38TDP_compo_MG$type[U])
+
+  print(paste("START with U --",U, ":: TYPE is ", TYPE, sep=""))
+      CTL <- clu38TDP_compo_MG$control[U]
+      highTDP <- clu38TDP_compo_MG$highTDP[U]
+      medTDP <- clu38TDP_compo_MG$medTDP[U]
+      noTDP <- clu38TDP_compo_MG$noTDP[U]
+  print(paste("compare::", CTL, "with:", highTDP, medTDP, noTDP, sep=' '))
+ 
+##### peak-motif enrichment --- ##### Ryan filter:   cutOff = "FDR <= 0.1 & Log2FC >= 0.5", I use FC >1 = grt 2 fold 
+print("== peak motif enrichment:: Up and down:: FDR 0.1 | abs(log2FC)> 1")
+##### vhighTDP ########### 
+print("== set 1 == vhighTDP")
+
+fPeaks_vhighTDP_Up_df <- read.csv2(paste(fPeaks_dirFDR_motifs,paste("fPeaks_",TYPE,"_vhighTDP",sep=""),".FDR.Up_enMotifs.csv",sep=""),sep=",") %>% as.data.frame()
+fPeaks_vhighTDP_Down_df <- read.csv2(paste(fPeaks_dirFDR_motifs,paste("fPeaks_",TYPE,"_vhighTDP",sep=""),".FDR.Down_enMotifs.csv",sep=""),sep=",") %>% as.data.frame()
+
+
+##### vmedTDP ########### 
+print("== set 1 == vmedTDP")
+fPeaks_vmedTDP_Up_df <- read.csv2(paste(fPeaks_dirFDR_motifs,paste("fPeaks_",TYPE,"_vmedTDP",sep=""),".FDR.Up_enMotifs.csv",sep=""),sep=",") %>% as.data.frame()
+fPeaks_vmedTDP_Down_df <- read.csv2(paste(fPeaks_dirFDR_motifs,paste("fPeaks_",TYPE,"_vmedTDP",sep=""),".FDR.Down_enMotifs.csv",sep=""),sep=",") %>% as.data.frame()
+
+##### vnoTDP ########### 
+print("== set 1 == vnoTDP")
+
+fPeaks_vnoTDP_Up_df <- read.csv2(paste(fPeaks_dirFDR_motifs,paste("fPeaks_",TYPE,"_vnoTDP",sep=""),".FDR.Up_enMotifs.csv",sep=""),sep=",") %>% as.data.frame()
+fPeaks_vnoTDP_Down_df <- read.csv2(paste(fPeaks_dirFDR_motifs,paste("fPeaks_",TYPE,"_vnoTDP",sep=""),".FDR.Down_enMotifs.csv",sep=""),sep=",") %>% as.data.frame()
+
+}
+#### END fPEAKS #### ####
+
+fPeaks_C37_enMotifs <- 
+  merge(merge(merge(fPeaks_vhighTDP_Up_df, fPeaks_vhighTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C37_vhighTDP_Up", ".C37_vhighTDP_Down")),
+merge(fPeaks_vmedTDP_Up_df, fPeaks_vmedTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C37_vmedTDP_Up", ".C37_vmedTDP_Down")),by="TF", all=TRUE, incomparables ="XXX"),
+merge(fPeaks_vnoTDP_Up_df, fPeaks_vnoTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C37_vnoTDP_Up", ".C37_vnoTDP_Down")),by="TF", all=TRUE, incomparables ="XXX")
+
+fPeaks_C36_enMotifs <- 
+  merge(merge(merge(fPeaks_vhighTDP_Up_df, fPeaks_vhighTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C36_vhighTDP_Up", ".C36_vhighTDP_Down")),
+merge(fPeaks_vmedTDP_Up_df, fPeaks_vmedTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C36_vmedTDP_Up", ".C36_vmedTDP_Down")),by="TF", all=TRUE, incomparables ="XXX"),
+merge(fPeaks_vnoTDP_Up_df, fPeaks_vnoTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C36_vnoTDP_Up", ".C36_vnoTDP_Down")),by="TF", all=TRUE, incomparables ="XXX")
+
+fPeaks_C38_enMotifs <- 
+  merge(merge(merge(fPeaks_vhighTDP_Up_df, fPeaks_vhighTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C38_vhighTDP_Up", ".C38_vhighTDP_Down")),
+merge(fPeaks_vmedTDP_Up_df, fPeaks_vmedTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C38_vmedTDP_Up", ".C38_vmedTDP_Down")),by="TF", all=TRUE, incomparables ="XXX"),
+merge(fPeaks_vnoTDP_Up_df, fPeaks_vnoTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C38_vnoTDP_Up", ".C38_vnoTDP_Down")),by="TF", all=TRUE, incomparables ="XXX")
+
+fPeaks_C2_enMotifs <- 
+  merge(merge(merge(fPeaks_vhighTDP_Up_df, fPeaks_vhighTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C2_vhighTDP_Up", ".C2_vhighTDP_Down")),
+merge(fPeaks_vmedTDP_Up_df, fPeaks_vmedTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C2_vmedTDP_Up", ".C2_vmedTDP_Down")),by="TF", all=TRUE, incomparables ="XXX"),
+merge(fPeaks_vnoTDP_Up_df, fPeaks_vnoTDP_Down_df, by="TF", all=TRUE, incomparables ="XXX", suffixes=c(".C2_vnoTDP_Up", ".C2_vnoTDP_Down")),by="TF", all=TRUE, incomparables ="XXX")
+
+## total is 870 motifs 
+
+fPeaks_MG_enMotifs <- merge(merge(fPeaks_C2_enMotifs, fPeaks_C36_enMotifs, by="TF", all=TRUE), 
+merge(fPeaks_C37_enMotifs, fPeaks_C38_enMotifs, by="TF", all=TRUE), by="TF", all=TRUE)
+
+rownames(fPeaks_MG_enMotifs) <- fPeaks_MG_enMotifs$TF
+
+fPeaks_MG_enMotifs2 <- fPeaks_MG_enMotifs %>% dplyr::select(starts_with("mlog10Padj")) %>% mutate_all(function(x) as.numeric(as.character(x)))
+
+## remove the zero rows and zero columns
+fPeaks_MG_enMotifs3 <- fPeaks_MG_enMotifs2[rowSums(fPeaks_MG_enMotifs2) > 0, ]
+fPeaks_MG_enMotifs4 <- fPeaks_MG_enMotifs3[,colSums(fPeaks_MG_enMotifs3) >0]
+
+colnames(fPeaks_MG_enMotifs4)
+
+nrow(fPeaks_MG_enMotifs4) #252
+Heatmap(data.matrix(fPeaks_MG_enMotifs4),
+        row_names_gp = gpar(fontsize = 3)
+) 
+
+## if just the downs at C2 
+fPeaks_MG_enMotifs_C2_down <- fPeaks_MG_enMotifs4 %>% dplyr::select(mlog10Padj.C2_vhighTDP_Down, mlog10Padj.C2_vmedTDP_Down, mlog10Padj.C2_vnoTDP_Down,mlog10Padj.C36_vhighTDP_Down)
+
+fPeaks_MG_enMotifs_C2_down <- fPeaks_MG_enMotifs_C2_down[rowSums(fPeaks_MG_enMotifs_C2_down) > 0, ] %>% dplyr::filter(mlog10Padj.C2_vhighTDP_Down>=1 | mlog10Padj.C2_vmedTDP_Down>=1 | mlog10Padj.C2_vnoTDP_Down>=1 | mlog10Padj.C36_vhighTDP_Down>=1)
+
+
+colnames(fPeaks_MG_enMotifs_C2_down) <- gsub("_Down", "", gsub("mlog10Padj.", "", colnames(fPeaks_MG_enMotifs_C2_down)))
+
+# remove the rows 
+fPeaks_MG_enMotifs_C2_down <- fPeaks_MG_enMotifs_C2_down[!(row.names(fPeaks_MG_enMotifs_C2_down) %in% "ENSG00000235187_346"),]                     
+rownames(fPeaks_MG_enMotifs_C2_down) <- sapply(strsplit(rownames(fPeaks_MG_enMotifs_C2_down) %>% as.character(), "_"), function(x) x[1])                                            fPeaks_MG_enMotifs_C2_down$TF <- rownames(fPeaks_MG_enMotifs_C2_down)
+    rep(1,45)                                                                                 
+                                                                           
+## 46 motifs total
+rownames(fPeaks_MG_enMotifs_C2_down)  <- 1:nrow(fPeaks_MG_enMotifs_C2_down)
+
+### TFs associated with immuno cells-- M7
+M7_TFs <- read.csv2("M7_TFs.txt",sep=",", header = FALSE) %>% as.data.frame()
+colnames(M7_TFs) <- c("TF")
+M7_TFs$TF <- toupper(M7_TFs$TF)
+M7_TFs$TF <- sapply(strsplit(M7_TFs$TF %>% as.character(), " "), function(x) x[1])  
+M7_TFs$M7yes <- "M7yes"
+M7_TFs_match <- merge(M7_TFs,fPeaks_MG_enMotifs_C2_down, by="TF")
+M7_TFs_match$TF
+
+
+fPeaks_MG_enMotifs_C2_down$TF <- rownames(fPeaks_MG_enMotifs_C2_down)
+
+M7_TFs_match$TF #10 of them 
+
+nrow(fPeaks_MG_enMotifs_C2_down)
+
+clus4_mark <- c("BCL11B","SPI1","SPIB","ERG","USF2")
+NTRKs <- c("ELK1", "ATF2", "CREB1", "FOS")
+AP1 <- c("ATF2", "JUN", "FOS")
+cytokine <- c("ELK1", "ATF2", "CREB1", "IRF3","JUN","STAT1","FOS","CEBPD")
+AP2 <-c("TFAP2E","TFAP2C")
+
+MG_marks <- c(M7_TFs_match$TF, clus4_mark, NTRKs, AP1, cytokine,AP2) %>% unique() #%>%length() #15 (from 22 of them)
+
+MG_marks_ha <- rowAnnotation(foo = anno_mark(
+  at = rownames(subset(
+    fPeaks_MG_enMotifs_C2_down, fPeaks_MG_enMotifs_C2_down$TF  %in% MG_marks))%>% as.numeric(), 
+  labels = subset(fPeaks_MG_enMotifs_C2_down, fPeaks_MG_enMotifs_C2_down$TF  %in% MG_marks)$TF, 
+  labels_gp = gpar(col =c(replicate(length(MG_marks), "black"), fontsize = 3))))
+### above for the marking on the heatmap
+  
+fPeaks_MG_enMotifs_C2_down_hm <- 
+  Heatmap(data.matrix(fPeaks_MG_enMotifs_C2_down %>% dplyr::select(-TF)), row_km = 4,border = TRUE,row_gap = unit(0, "mm"),
+        row_names_gp = gpar(fontsize = 0), column_names_gp  = gpar(fontsize = 3), cluster_columns =FALSE,
+        col=colorRamp2(c(0, 0.5, 3), c("grey", "white","#b2182b")),row_dend_gp = gpar(col = "black", row_dend_gp=0.5), row_dend_width = unit(0.2, "in"),
+        right_annotation = MG_marks_ha, #row_names_side = "left"
+)
+
+pdf(file="MG_heatmapt_enMotifs.pdf", width = 3.2, height =4)
+draw(fPeaks_MG_enMotifs_C2_down_hm, 
+    # column_title = "ATAC dTHSSs at ASD genes: CTCF boy", column_title_gp = gpar(fontsize = 10, fontface = "bold"),
+    # row_title= paste("peaks: ", Peaks, ";    ASD genes: ", Genes,sep=""), 
+    # row_title_gp = gpar(fontsize = 10, col = "red")
+    )
+dev.off()
+
+
+######### the reactome enrichment of the TFs
+TF_df <- data.frame(GO=c("Signaling by NTRKs", "Activation of AP-1 family TFs","Cytokine Signaling","Activation of AP-2 family TFs"),
+                    FDR=c(0.0115,0.000263,0.00569,0.00534),
+                    clu=c("clu2-4", "clu2-4","clu2-4","clu1"))
+          TF_df$GO <- factor( TF_df$GO, levels =  TF_df$GO)
+          
+## re_plot
+pdf(file="MG_heatmapt_enMotifs_bar_GO.pdf", 
+     width = 1.65, height = 1.5)
+    TF_df %>% 
+  ggplot(aes(x=-log10(FDR), y=GO, fill=clu)) + #facet_grid(rows = vars(Cluster), scales = "free") + 
+  geom_bar(stat="identity", color="black", position=position_dodge(), width = 0.8, size=0.2)+
+  ylab("") + xlab(expression(-log[10]("FDR"))) + force_panelsizes(rows = c(2, 10))+ #geom_vline(xintercept = 2, colour="#ED1E79", linetype="dashed")+
+  scale_fill_manual(values=c('#fc9533', '#9f79d3')) + theme_Publication()
+dev.off()  
+
+# Reactome pathways
+# Negative regulation of activity of TFAP2 (AP-2) family transcription factors
+# Transcriptional regulation by the AP-2 (TFAP2) family of transcription factors
+# Activation of the TFAP2 (AP-2) family of transcription factors
+
+### get the motifs positions 
+```{r}
+All the same thing -- whole scanning 
+all_mfpos <- getPositions(ArchR_C9)
+MG_mfpos <- getPositions(ArchR_C9_MG)
+
+getPeakAnnotation
+  ## ArchR_C9_MG@peakAnnotation$Motif$Matches
+
+motifs <- clus4_mark
+markerMotifs <- unlist(lapply(motifs, function(x) grep(x, names(MG_mfpos), value = TRUE)))
+markerMotifs <- markerMotifs[markerMotifs %ni% "SREBF1_22"]
+markerMotifs
+
+MG_mfpos$BCL11B_825
+
+rm(clu38TDP_compo)
+fPeaks_all_comp_list27 <- read.csv2("fPeaks_all_comp_list27.csv", sep=",") %>% dplyr::select(-c(seqnames.y,start.y,end.y))
+
+## so to remove the extra rows
+fPeaks_all_comp_list27 %>% nrow()
+fPeaks_all_comp_list27 %>% dplyr::filter(start.x ==start.y) %>% nrow()
+## convert into GRs for adding the TF motifs info
+fPeaks_all_comp_list27_GR <- makeGRangesFromDataFrame(fPeaks_all_comp_list27,
+                         keep.extra.columns=TRUE,
+                         ignore.strand=FALSE,
+                         seqinfo=NULL,
+                         seqnames.field=c("seqnames", "seqname",
+                                          "chromosome", "chrom",
+                                          "chr", "chromosome_name",
+                                          "seqid", "seqnames.x"),
+                         start.field=c("start", "start.x"),
+                         end.field=c("end", "stop", "end.x"),
+                         strand.field="strand",
+                         starts.in.df.are.0based=FALSE)
+
+## this is the super range
+all_mfpos2 <- all_mfpos %>% unlist()
+names(all_mfpos) # names of the list 
+  mcols(all_mfpos2)$TF <- names(all_mfpos2) # add TF as another column
+
+## keep start stop info 
+  fPeaks_all_comp_list27_GR$chr <- fPeaks_all_comp_list27_GR$ID
+### use find overlap to subset 
+#First we find all overlaps of features in gr1 (the query object) with features in gr2 (the subject object).
+  #gr1 is longer, gr2 is shorter
+
+gr1 <- all_mfpos2
+gr2 <- fPeaks_all_comp_list27_GR
+# Find overlaps
+m <- findOverlaps(gr1, gr2);
+
+  #We then store matching features in gr1.matched, and add metadata from gr2.
+# Features from gr1 with overlaps in gr2
+# Note: The same feature from gr1 can overlap with mulitple features from gr2
+gr1.matched <- gr1[queryHits(m)];
+
+# Add the metadata from gr2
+mcols(gr1.matched) <- cbind.data.frame(
+    mcols(gr1.matched),
+    mcols(gr2[subjectHits(m)]));
+
+gr1.matched;
+
+## this is the final matches to the differential ones 
+fPeaks_all_comp_list27_GR_TF <- gr1.matched
+  
+##############################
+  # convert itme names into idx before convert into df
+  names(fPeaks_all_comp_list27_GR_TF) <- (1:length(fPeaks_all_comp_list27_GR_TF))
+fPeaks_all_comp_list27_GR_TFdf <- fPeaks_all_comp_list27_GR_TF %>% as.data.frame()
+
+colnames(fPeaks_all_comp_list27_GR_TFdf)[which(names(fPeaks_all_comp_list27_GR_TFdf) == "seqnames")] <- "chr.TF"
+colnames(fPeaks_all_comp_list27_GR_TFdf)[which(names(fPeaks_all_comp_list27_GR_TFdf) == "start")] <- "start.TF"
+colnames(fPeaks_all_comp_list27_GR_TFdf)[which(names(fPeaks_all_comp_list27_GR_TFdf) == "end")] <- "end.TF"
+colnames(fPeaks_all_comp_list27_GR_TFdf)[which(names(fPeaks_all_comp_list27_GR_TFdf) == "score")] <- "score.TF"
+
+
+fPeaks_all_comp_list27_GR_TFdf$chr <- sapply(strsplit(fPeaks_all_comp_list27_GR_TFdf$ID %>% as.character(), "_"), function(x) x[1])
+fPeaks_all_comp_list27_GR_TFdf$start <- sapply(strsplit(fPeaks_all_comp_list27_GR_TFdf$ID %>% as.character(), "_"), function(x) x[2])
+fPeaks_all_comp_list27_GR_TFdf$end <- sapply(strsplit(fPeaks_all_comp_list27_GR_TFdf$ID %>% as.character(), "_"), function(x) x[3])
+
+## then the final ones 
+fPeaks_all_comp_list27_GR_TFdf %>% dplyr::select(chr, start,end, ID, Log2FC, FDR, types, cluster, peakType, nearestGene, chr.TF, start.TF, end.TF, width, strand, score.TF, TF)
+
+## make away the # after TF
+fPeaks_all_comp_list27_GR_TFdf$TF <- sapply(strsplit(fPeaks_all_comp_list27_GR_TFdf$TF %>% as.character(), "_"), function(x) x[1])
+
+## wha tit looks like 
+head(fPeaks_all_comp_list27_GR_TFdf, 2)
+
+fPeaks_all_comp_list27_GR_TFdf %>% dplyr::filter(TF =="BCL11B_825") %>% dplyr::filter(types =="C2_MG_vhighTDP") %>% dplyr::select(nearestGene, TF)
+fPeaks_all_comp_list27_GR_TFdf %>% dplyr::filter(TF =="BCL11B_825") %>% dplyr::filter(types =="C2_MG_vnoTDP") %>% dplyr::select(nearestGene, TF)
+
+
+## the right ones -- only CD83 is a match!!!!! 
+fGenes_C2_MG_vhighTDP.noflt
+fGenes_C2_MG_vhighTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% nrow() ## only 41?? 
+merge(fGenes_C2_MG_vhighTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% dplyr::select(name, DEG), 
+      fPeaks_all_comp_list27_GR_TFdf %>% dplyr::filter(TF =="BCL11B") %>% dplyr::filter(types =="C2_MG_vhighTDP") %>% dplyr::select(nearestGene, TF),
+      by.x="name", by.y="nearestGene")
+
+## the right ones -- only CD83 is a match!!!!! 
+fGenes_C2_MG_vnoTDP.noflt
+fGenes_C2_MG_vnoTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% nrow() ## only 41?? 
+
+## none. 
+merge(fGenes_C2_MG_vnoTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% dplyr::select(name, DEG), 
+      fPeaks_all_comp_list27_GR_TFdf %>% dplyr::filter(TF =="BCL11B") %>% dplyr::filter(types =="C2_MG_vnoTDP") %>% dplyr::select(nearestGene, TF),
+      by.x="name", by.y="nearestGene")
+
+### subset the TFs that matched with the C2 
+fPeaks_all_comp_list27_GR_TFdf_C2down <-
+  subset(fPeaks_all_comp_list27_GR_TFdf, fPeaks_all_comp_list27_GR_TFdf$TF  %in% fPeaks_MG_enMotifs_C2_down$TF %>% as.vector()
+       )
+
+merge(fGenes_C2_MG_vhighTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% dplyr::select(name, DEG), 
+      fPeaks_all_comp_list27_GR_TFdf_C2down %>% dplyr::filter(types =="C2_MG_vhighTDP")# %>% dplyr::select(nearestGene, TF)
+      ,
+      by.x="name", by.y="nearestGene")
+
+CD83_TFs <- unique(merge(fGenes_C2_MG_vhighTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% dplyr::select(name, DEG), 
+      fPeaks_all_comp_list27_GR_TFdf_C2down %>% dplyr::filter(types =="C2_MG_vhighTDP")# %>% dplyr::select(nearestGene, TF)
+      ,
+      by.x="name", by.y="nearestGene")$TF)
+
+## same site or? 
+
+## still no. at the noTDP group!!
+merge(fGenes_C2_MG_vnoTDP.noflt %>% dplyr::filter(DEG=="DOWN") %>% dplyr::select(name, DEG), 
+      fPeaks_all_comp_list27_GR_TFdf_C2down %>% dplyr::filter(types =="C2_MG_vnoTDP") %>% dplyr::select(nearestGene, TF),
+      by.x="name", by.y="nearestGene")
+
+### this is the cCREs that matched 
+#EH38E3692205   chr6:14,121,874-14,122,220
+
+p <- plotBrowserTrack(
+    ArchRProj = ArchR_C9_MG, 
+    groupBy = "clu38TDP", 
+    geneSymbol = "CD83", 
+    upstream = 50000,
+    downstream = 50000
+)
+plotPDF(p, 
+    name = "Plot-Tracks-Marker-Genes_CD83.pdf", 
+    ArchRProj = ArchR_C9_MG, 
+    addDOC = FALSE, width = 5, height = 5)
+
+pC2 <- plotBrowserTrack(
+    ArchRProj = ArchR_C9_MG[BiocGenerics::which(ArchR_C9_MG$clu38 =="C2")], 
+    groupBy = "clu38TDP", 
+    geneSymbol = "CD83", #ylim=c(0,1.2),
+    upstream = 10000,
+    downstream = 10000
+)
+plotPDF(pC2$CD83, 
+    name = "Plot-Tracks-Marker-Genes_CD83_C2only.pdf", 
+    ArchRProj = ArchR_C9_MG, 
+    addDOC = FALSE, width = 5, height = 5)
+
+## maybe try the brower
+ArchRBrowser(ArchR_C9_MG)
+
+ArchRBrowser(ArchR_C9_MG[BiocGenerics::which(ArchR_C9_MG$clu38 =="C2")],
+             baseSize = 6, borderWidth = 0.25,tickWidth = 0.25,facetbaseSize = 6)
+
+ArchR_C9_MG <- ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="MG")]
+
+
+########### Try to dp the grid changes 
+
+pdf(file="MG_C2_CD83.pdf", 
+     width = 2, height =2.2, onefile=TRUE)  
+grid::grid.newpage()
+grid::grid.draw(p$CD83)
+dev.off()
+
+## remove other panel
+gt <- (p$CD83)
+print(gt)
+
+rm_grobs <- gt$layout$name %in% c("panel-1-5", "panel-1-6", "panel-1-7", "panel-1-8",
+                                  "panel-1-9", "panel-1-10", "panel-1-11", "panel-1-12",
+                                  "panel-1-13", "panel-1-14", "panel-1-15", "panel-1-16")
+# remove grobs
+gt$grobs[rm_grobs] <- NULL
+gt$layout <- gt$layout[!rm_grobs, ]
+
+# check result
+gtable_show_names(gt)
+
+plotPDF(gt, 
+    name = "Plot-Tracks-Marker-Genes_CD83_2.pdf", 
+    ArchRProj = ArchR_C9_MG, 
+    addDOC = FALSE, width = 5, height = 5)
+### 
+## max
+max_leg = c()
+for(i in 1:30){
+  g <- ggplot_build(MG_spec_geness_GSp_cowplot[[i]])
+  max_leg[i]=round(max(unique(g$data[[1]]["value"])), digits=1)
+  }
+max_leg
+
+#legend 
+leg_label <- paste(MG_spec_genes," (",min_leg, "-",max_leg,")" ,sep="")
+
+### plot multiple genes on one page
+p2 <- lapply(MG_spec_geness_GSp_cowplot, function(x){
+    x + guides(color = FALSE, fill = FALSE) + 
+    theme_ArchR(baseSize = 0) +
+    theme(plot.margin = unit(c(0, 0, 0, 0), "cm")) + #guides(fill = FALSE)+
+    theme(
+        axis.text.x=element_blank(), 
+        axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), 
+        axis.ticks.y=element_blank())
+})
+
+##### Try to plot the matrix at that specific peak 
+When using the ChromVAR (function: addMotifAnnotations(motifSet = "cisbp"), addDeviationsMatrix), I found that there are many negative value in the PWM matrix (TFBSTools::Matrix(getPeakAnnotation(projRenal, "Motif")$motifs)). I don't know why?
+in this case, I can't plot the figure using seqLogo function, like this:
+  
+  
+ArchR_C9_MG_peakAnno <- getPeakAnnotation(ArchRProj = ArchR_C9_MG, name = "Motif")
+
+ArchR_C9_MG_peakAnno_motifM <- TFBSTools::Matrix(ArchR_C9_MG_peakAnno$motifs) ##--> this gives position weight matrix numebrs 
+
+
+pwm <- ArchR_C9_MG_peakAnno$motifs$CTCF_177 ##> this is already a PWMatrix object, a pwm
+
+
+pwm <- toPWM(pfm, pseudocounts=0.8)
+pwm
+TFBSTools::seqLogo(pwm)
+
+seqLogo(ArchR_C9_MG_peakAnno_motifM$CTCF_177)
+
+seqLogo(toICM(ArchR_C9_MG_peakAnno_motifM$CTCF_177, pseudocounts=0.8))
+
+toICM(pfm, pseudocounts=0.8, schneider=TRUE)
+
+icm <- seqLogo(toICM(ArchR_C9_MG_peakAnno$motifs$CTCF_177, pseudocounts=0.8, schneider=TRUE))
+icm
+
+
+TFBSTools::PWMatrix (ArchR_C9_MG_peakAnno$motifs
+##To convert a PWM to a probability matrix --
+  
+ArchR_C9_MG_peakAnno$motifs["CTCF_177"][1]
+
+
+PWMatrixToProbMatrix <- function(x){
+	if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+	(exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+}
+ 
+ProbMatrices <- lapply(PWMs, PWMatrixToProbMatrix)
+lapply(ProbMatrices, colSums) %>% range
+#[1] 0.9999996 1.0000004
+
+#Maybe we can just tidy this up a tiny bit
+
+PWMatrixToProbMatrix <- function(x){
+	if (class(x) != "PWMatrix") stop("x must be a TFBSTools::PWMatrix object")
+	m <- (exp(as(x, "matrix"))) * TFBSTools::bg(x)/sum(TFBSTools::bg(x))
+	m <- t(t(m)/colSums(m))
+	m
+}
+
+ProbMatrices <- lapply(ArchR_C9_MG_peakAnno$motifs, PWMatrixToProbMatrix)
+lapply(ProbMatrices, colSums) %>% range
+
+ProbMatrices$CTCF_177 ##> this is the icm already
+
+selog
+
+icm <- toICM(ProbMatrices$CTCF_177, pseudocounts=0.8, schneider=FALSE,
+             bg=c(A=0.25, C=0.25, G=0.25, T=0.25))
+
+data(MA0004.1)
+
+ mFile <- system.file("extdata/pwm1", package = "seqLogo")
+m <- read.table(mFile)
+pwm <- TFBSTools::toPWM(m(m))
+
+ pwm <- toPWM(ProbMatrices$CTCF_177 %>% as.data.frame(), type="log2probratio", pseudocounts=0.8)
+
+ 
+ seqLogo(ProbMatrices$CTCF_177 %>% as.data.frame(), ic.scale=FALSE)
+ 
+library("seqLogo")
+ p_CTCF <- makePWM(ProbMatrices$CTCF_177 %>% as.data.frame())
+slotNames(p_CTCF)
+seqLogo(p_CTCF)
+
+#### for real, canl all bind there. 
+pdf(file="Motifs_logo_CD83.pdf", 
+     width = 6, height =3, onefile=TRUE)  
+seqLogo(makePWM(ProbMatrices$IRF3_630%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$BCL11A_194%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$BCL11B_825%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$BCL11A_194%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$ATF4_122%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$SPIC_344%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$SPIB_336%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$SPI1_322%>% as.data.frame()))
+seqLogo(makePWM(ProbMatrices$BCL6B_218%>% as.data.frame()))
+dev.off()
+```

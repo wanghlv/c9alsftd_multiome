@@ -1,0 +1,1289 @@
+---
+title: "c9alsftd_multiome - Neuronal clusters analysis - WGCNA, deconvolutions, etc"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## Load required packages and graphical set up
+```{r}
+library(ArchR)
+library(parallel)
+library(monocle3)
+library(tidyselect)
+library(tidygraph)
+library(tidytree
+library(tidyr
+library(tidyverse)
+library(parallel)
+library(monocle3)
+library(cicero)
+
+# https://rpubs.com/Koundy/71792
+# remove all bold text
+theme_Publication <- function(base_size=7, base_family="sans") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black", size = 0.2),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(t = 0, unit='cm'),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text()
+          ))
+      
+}
+
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+## loading packages
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) # Need to run for the right genome version. 
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+library(org.Hs.eg.db)
+library(ggupset)
+library(ReactomePA)
+library(clusterProfiler) # the GO part
+library(grid)
+library(gghighlight)
+library(DOSE)
+library(ggplot2)
+library(cowplot)
+library(wesanderson)
+library(ReactomePA)
+library("pathview")
+library(annotate)
+library(GenomicFeatures)
+
+options(ChIPseeker.downstreamDistance = 3000) # this can be used to defined the options. 
+options(ChIPseeker.ignore_1st_exon = TRUE)
+options(ChIPseeker.ignore_1st_intron = TRUE)
+options(ChIPseeker.ignore_downstream = TRUE) # put all into intergenic regions
+options(ChIPseeker.ignore_promoter_subcategory = TRUE)
+
+```
+
+## basic environment setup to run ArchR v1.0.2 or the most recent develop version
+Find **ArchR** information at <https://www.archrproject.com/index.html>
+Additional information about running **ArchR** multiomic pipeline: 
+<https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html>
+```{r}
+set.seed(1)
+addArchRThreads(threads = 100)
+addArchRGenome("hg38")
+getArchRGenome()
+```
+
+## WGCNA analysis to identify gene coexpression networks of neuronal clusters
+### prepare to run WGCNA
+```{r}
+## start with neuronal clusters only
+ArchR_C9_Neu <- ArchR_C9[BiocGenerics::which(ArchR_C9$Type =="EX" | ArchR_C9$Type =="IN")]
+
+## get the expression count of rna -- not normalized?? -- only keep the ones have fGenes 
+ArchR_C9_Neu_NeuClu38TDPgrp.rna.SE <- 
+    getGroupSE(
+      ArchRProj = ArchR_C9_Neu[BiocGenerics::which(ArchR_C9_Neu$clu38 !="C11" & ArchR_C9_Neu$clu38 !="C16" & ArchR_C9_Neu$clu38 !="C19"& ArchR_C9_Neu$clu38 !="C24")], 
+      useMatrix = "GeneExpressionMatrix",
+      groupBy = "NeuClu38TDPgrp", 
+      divideN = FALSE, threads = getArchRThreads(),verbose = TRUE, logFile = createLogFile("getGroupSE")
+      )
+rownames(ArchR_C9_Neu_NeuClu38TDPgrp.rna.SE) <- rowData(ArchR_C9_Neu_NeuClu38TDPgrp.rna.SE)$name
+
+## keep on the fGenes of the vhigh and vnoTDP to cutdown the lsit of genes 
+fGenesFDR_Neu <- fGenesFDR_list_all  %>% filter(celltype=="EX" | celltype=="IN") %>% filter(GENETYPE=="protein-coding") %>% filter(grp!="vmedTDP") 
+fGenesFDR_NeuNames <- fGenesFDR_Neu$name %>% unique() #%>% length()
+
+####################################
+#### the df convert
+NeuClu38TDPgrp_rnaDf <- ArchR_C9_Neu_NeuClu38TDPgrp.rna.SE %>% assay() %>% as.data.frame()
+  NeuClu38TDPgrp_rnaDf$gene <- rownames(NeuClu38TDPgrp_rnaDf)
+
+NeuClu38TDPgrp_rnaDf <- merge(NeuClu38TDPgrp_rnaDf, fGenesFDR_Neu %>% select(name, GENETYPE) %>% unique(), by.x="gene", by.y="name", all.y=TRUE) %>% dplyr::select(-GENETYPE) 
+
+############### START WGCNA
+library(tidyverse)     # tidyverse will pull in ggplot2, readr, other useful libraries
+library(magrittr)      # provides the %>% operator
+library(WGCNA)  
+library(DESeq2)  
+
+### check data-- then order the columns 
+NeuClu38TDPgrp_rnaDf[1:5,1:10]        # Look at first 5 rows and 10 columns
+
+names(NeuClu38TDPgrp_rnaDf)[1] = "GeneId"
+col_df <- data.frame(
+  ID = names(NeuClu38TDPgrp_rnaDf),
+  order=paste(sapply(strsplit(names(NeuClu38TDPgrp_rnaDf) %>% as.character(), "_"), function(x) x[3]),
+              sapply(strsplit(names(NeuClu38TDPgrp_rnaDf) %>% as.character(), "_"), function(x) x[2]),
+              sapply(strsplit(names(NeuClu38TDPgrp_rnaDf) %>% as.character(), "_"), function(x) x[5]),sep="_"),
+  type=sapply(strsplit(names(NeuClu38TDPgrp_rnaDf) %>% as.character(), "_"), function(x) x[1])
+)
+col_df[1,2] <- 1
+col_df[1,3] <- 1
+col_df <- col_df %>% arrange(order)
+
+## split into two groups 
+col_EX_df <- col_df %>% filter(type!="IN") %>% arrange(order)
+col_IN_df <- col_df %>% filter(type!="EX") %>% arrange(order)
+
+NeuClu38TDPgrp_rnaDf <- NeuClu38TDPgrp_rnaDf[, col_df$ID] ## ordering 
+  EX_rnaDF <- NeuClu38TDPgrp_rnaDf[, col_EX_df$ID] ## ordering 
+  IN_rnaDF <- NeuClu38TDPgrp_rnaDf[, col_IN_df$ID] ## ordering 
+
+  
+EX_rnaDF <- merge(NeuClu38TDPgrp_rnaDf[, col_EX_df$ID], fGenesFDR_Neu %>% filter(celltype=="EX") %>% select(name, GENETYPE) %>% unique(), by.x="GeneId", by.y="name", all.y=TRUE) %>% dplyr::select(-GENETYPE) 
+IN_rnaDF <- merge(NeuClu38TDPgrp_rnaDf[, col_IN_df$ID], fGenesFDR_Neu %>% filter(celltype=="IN") %>% select(name, GENETYPE) %>% unique(), by.x="GeneId", by.y="name", all.y=TRUE) %>% dplyr::select(-GENETYPE)   
+
+```
+
+#### 1 WGCNA for the EX neurons 
+```{r}
+#######################################################
+## 1 ## prep and normalize using the vst in DEseq 
+data <- EX_rnaDF
+
+ncol(EX_rnaDF) #29
+### clean df for WGCNA
+  #WGCNA:: rows = treatment, columns = gene probes
+rm(de_input)
+### 2 ### normalization with DEseq
+de_input = as.matrix(data[,-1])
+row.names(de_input) = data$GeneId
+de_input[1:5,1:10]
+
+meta_df <- data.frame(Sample = names(data),
+                      Type = paste(sapply(strsplit(names(data), "_"), function(x) x[1]),
+                                   sapply(strsplit(names(data), "_"), function(x) x[2]), sep="_"))[-1,]
+EX_meta_df <- meta_df
+#### Way 1 ###
+  ## treat the same cluster as replicat?? to nromalize estimate variance. 
+dds <- DESeqDataSetFromMatrix(round(de_input),
+                              meta_df,
+                              design = ~Type
+                              )
+      vsd <- vst(dds, blind=FALSE)
+      mat <- assay(vsd)
+      mat[1:5,1:10]
+
+## plot 
+mat_normalized_df <- data.frame(mat) %>%
+  mutate(
+    Gene_id = row.names(mat)
+  ) %>%
+  pivot_longer(-Gene_id)
+
+mat_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized no quantile filtration",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+#######################################################  
+## 2 ## transpose and pick threshold for WGCNA, row is data, colume is genes
+  #-# alternative
+input_mat <- t(mat) # Transpose this data
+  EX_datExpr <- input_mat
+  #> Allowing multi-threading with up to 100 threads.
+    # allowWGCNAThreads(nThreads=100) 
+  # Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+
+  # Call the network topology analysis function
+sft = pickSoftThreshold(
+  input_mat,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+  )
+sft <- pickSoftThreshold(input_mat,
+  dataIsExpr = TRUE,
+  corFnc = cor,
+  networkType = "signed"
+)
+  ## plot out 
+    par(mfrow = c(1,2));
+    cex1 = 0.9;
+    
+    plot(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         xlab = "Soft Threshold (power)",
+         ylab = "Scale Free Topology Model Fit, signed R^2",
+         main = paste("Scale independence")
+    )
+    text(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         labels = powers, cex = cex1, col = "red"
+    )
+    abline(h = 0.90, col = "red")
+    plot(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         xlab = "Soft Threshold (power)",
+         ylab = "Mean Connectivity",
+         type = "n",
+         main = paste("Mean connectivity")
+    )
+    text(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         labels = powers,
+         cex = cex1, col = "red")
+    # Pick a soft threshold power near the curve of the plot, so here we could pick 7, 8 or 9. 
+    # We’ll pick 9 but feel free to experiment with other powers to see how it affects your results.
+
+#######################################################
+##  3 ## START WGCNA calc
+    picked_power = 9 # can try 9
+temp_cor <- cor       
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+rm(netwk)
+netwk <- blockwiseModules(input_mat,                # <= input here
+                            # == Adjacency Function ==
+                          power = picked_power,                # <= power here
+                          networkType = "signed",
+                            # == Tree and Block Options ==
+                          deepSplit = 2,pamRespectsDendro = F,
+                            # detectCutHeight = 0.75,
+                          minModuleSize = 30,maxBlockSize = 20000,
+                            # == Module Adjustments ==
+                          reassignThreshold = 0,mergeCutHeight = 0.25,
+                           # == TOM == Archive the run results in TOM file (saves time)
+                          saveTOMs = T,saveTOMFileBase = "ER",
+                            # == Output Options
+                          numericLabels = T,verbose = 3,randomSeed = 1234)
+
+cor <- temp_cor     # Return cor function to original namespace
+
+### then look at the network 
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(
+  netwk$dendrograms[[1]],# number of genes 
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,hang = 0.03,addGuide = TRUE,guideHang = 0.05 )
+  netwk$MEs %>% names()
+
+#######################################################
+##  4 ## step pull out module
+### make the module keys 
+module_df <- data.frame(
+  gene_id = names(netwk$colors),
+  colors = labels2colors(netwk$colors),
+  module = (tibble::enframe(netwk$colors, name = "gene", value = "module") %>% dplyr::mutate(module = paste0("ME", module)))$module
+)
+
+unique(netwk$unmergedColors)
+module_df$colors %>% unique() %>% length() #17
+
+### ### ### ### ### ### ### 
+### associate samples with modules
+# Get Module Eigengenes per cluster
+MEs0 <- moduleEigengenes(input_mat, mergedColors)$eigengenes
+
+# Reorder modules so similar modules are next to each other
+MEs0 <- orderMEs(MEs0)
+module_order = names(MEs0) %>% gsub("ME","", .)
+
+# Add treatment names
+MEs0$treatment = row.names(MEs0)
+
+# tidy & plot data
+mME = MEs0 %>%
+  pivot_longer(-treatment) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order)
+  )
+
+## colors 
+mME_plot <- mME %>% ggplot(., aes(x=treatment, y=name, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+## MEs
+mME.module <-  merge(mME%>% as.data.frame(), module_df[,-1] %>% unique(), by.x="name", by.y="colors")
+
+    #    name            treatment       value module
+    # 1 black     IN_C13_7_LGE_CTL  0.12987775    ME7
+    # 2 black IN_C13_7_LGE_highTDP  0.15653013    ME7
+
+mME_plot2 <- mME.module %>% ggplot(., aes(x=treatment, y=module, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme_Publication()+ theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+pdf(file="mME_plot2_Neu_EX.corr_hm.pdf", width =5, height =5, onefile = TRUE)
+ mME_plot2
+ plotDendroAndColors(
+  netwk$dendrograms[[1]],# number of genes 
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+   ## plot out 
+    par(mfrow = c(1,2));
+    cex1 = 0.9;
+    
+    plot(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         xlab = "Soft Threshold (power)",
+         ylab = "Scale Free Topology Model Fit, signed R^2",
+         main = paste("Scale independence")
+    )
+    text(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         labels = powers, cex = cex1, col = "red"
+    )
+    abline(h = 0.90, col = "red")
+    plot(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         xlab = "Soft Threshold (power)",
+         ylab = "Mean Connectivity",
+         type = "n",
+         main = paste("Mean connectivity")
+    )
+    text(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         labels = powers,
+         cex = cex1, col = "red")
+dev.off()
+```
+
+#### 2 WGCNA for the IN neurons 
+```{r}
+#######################################################
+## 1 ## prep and normalize using the vst in DEseq 
+data <- IN_rnaDF
+
+ncol(IN_rnaDF) #29
+### clean df for WGCNA
+  #WGCNA:: rows = treatment, columns = gene probes
+  #WGCNA:: rows = treatment, columns = gene probes
+rm(de_input)
+### 2 ### normalization with DEseq
+de_input = as.matrix(data[,-1])
+row.names(de_input) = data$GeneId
+de_input[1:5,1:10]
+
+meta_df <- data.frame(Sample = names(data),
+                      Type = paste(sapply(strsplit(names(data), "_"), function(x) x[1]),
+                                   sapply(strsplit(names(data), "_"), function(x) x[2]), sep="_"))[-1,]
+IN_meta_df <- meta_df
+#### Way 1 ###
+  ## treat the same cluster as replicat?? to nromalize estimate variance. 
+dds <- DESeqDataSetFromMatrix(round(de_input),
+                              meta_df,
+                              design = ~Type
+                              )
+      vsd <- vst(dds, blind=FALSE)
+      mat <- assay(vsd)
+      mat[1:5,1:10]
+dim(mat)    
+
+## plot 
+mat_normalized_df <- data.frame(mat) %>%
+  mutate(
+    Gene_id = row.names(mat)
+  ) %>%
+  pivot_longer(-Gene_id)
+
+mat_normalized_df %>% ggplot(., aes(x = name, y = value)) +
+  geom_violin() +
+  geom_point() +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text( angle = 90)
+  ) +
+  ylim(0, NA) +
+  labs(
+    title = "Normalized no quantile filtration",
+    x = "treatment",
+    y = "normalized expression"
+  )
+
+#######################################################  
+## 2 ## transpose and pick threshold for WGCNA, row is data, colume is genes
+  #-# alternative
+input_mat <- t(mat) # Transpose this data
+    IN_datExpr <- input_mat
+
+  #> Allowing multi-threading with up to 100 threads.
+    # allowWGCNAThreads(nThreads=100) 
+  # Choose a set of soft-thresholding powers
+powers = c(c(1:10), seq(from = 12, to = 20, by = 2))
+
+  # Call the network topology analysis function
+sft = pickSoftThreshold(
+  input_mat,             # <= Input data
+  #blockSize = 30,
+  powerVector = powers,
+  verbose = 5
+  )
+sft <- pickSoftThreshold(input_mat,
+  dataIsExpr = TRUE,
+  corFnc = cor,
+  networkType = "signed"
+)
+  ## plot out 
+    par(mfrow = c(1,2));
+    cex1 = 0.9;
+    
+    plot(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         xlab = "Soft Threshold (power)",
+         ylab = "Scale Free Topology Model Fit, signed R^2",
+         main = paste("Scale independence")
+    )
+    text(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         labels = powers, cex = cex1, col = "red"
+    )
+    abline(h = 0.90, col = "red")
+    plot(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         xlab = "Soft Threshold (power)",
+         ylab = "Mean Connectivity",
+         type = "n",
+         main = paste("Mean connectivity")
+    )
+    text(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         labels = powers,
+         cex = cex1, col = "red")
+    # Pick a soft threshold power near the curve of the plot, so here we could pick 7, 8 or 9. 
+    # We’ll pick 9 but feel free to experiment with other powers to see how it affects your results.
+
+#######################################################
+##  3 ## START WGCNA calc
+    picked_power = 9 # can try 9
+temp_cor <- cor       
+cor <- WGCNA::cor         # Force it to use WGCNA cor function (fix a namespace conflict issue)
+rm(netwk)
+netwk <- blockwiseModules(input_mat,                # <= input here
+                            # == Adjacency Function ==
+                          power = picked_power,                # <= power here
+                          networkType = "signed",
+                            # == Tree and Block Options ==
+                          deepSplit = 2,pamRespectsDendro = F,
+                            # detectCutHeight = 0.75,
+                          minModuleSize = 30,maxBlockSize = 20000,
+                            # == Module Adjustments ==
+                          reassignThreshold = 0,mergeCutHeight = 0.25,
+                           # == TOM == Archive the run results in TOM file (saves time)
+                          saveTOMs = T,saveTOMFileBase = "ER",
+                            # == Output Options
+                          numericLabels = T,verbose = 3,randomSeed = 1234)
+
+cor <- temp_cor     # Return cor function to original namespace
+
+### then look at the network 
+# Convert labels to colors for plotting
+mergedColors = labels2colors(netwk$colors)
+# Plot the dendrogram and the module colors underneath
+plotDendroAndColors(
+  netwk$dendrograms[[1]],# number of genes 
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,hang = 0.03,addGuide = TRUE,guideHang = 0.05 )
+
+#######################################################
+##  4 ## step pull out module
+### make the module keys 
+module_df <- data.frame(
+  gene_id = names(netwk$colors),
+  colors = labels2colors(netwk$colors),
+  module = (tibble::enframe(netwk$colors, name = "gene", value = "module") %>% dplyr::mutate(module = paste0("ME", module)))$module
+)
+
+unique(netwk$unmergedColors)
+module_df$colors %>% unique() %>% length() #16
+
+### ### ### ### ### ### ### 
+### associate samples with modules
+# Get Module Eigengenes per cluster
+MEs0 <- moduleEigengenes(input_mat, mergedColors)$eigengenes
+
+# Reorder modules so similar modules are next to each other
+MEs0 <- orderMEs(MEs0)
+module_order = names(MEs0) %>% gsub("ME","", .)
+
+# Add treatment names
+MEs0$treatment = row.names(MEs0)
+
+# tidy & plot data
+mME = MEs0 %>%
+  pivot_longer(-treatment) %>%
+  mutate(
+    name = gsub("ME", "", name),
+    name = factor(name, levels = module_order)
+  )
+
+## colors 
+mME_plot <- mME %>% ggplot(., aes(x=treatment, y=name, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+## MEs
+mME.module <-  merge(mME%>% as.data.frame(), module_df[,-1] %>% unique(), by.x="name", by.y="colors")
+
+mME_plot2 <- mME.module %>% ggplot(., aes(x=treatment, y=module, fill=value)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme_Publication()+ theme(axis.text.x = element_text(angle=90)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+pdf(file="mME_plot2_Neu_IN.corr_hm.pdf", width =5, height =5, onefile = TRUE)
+ mME_plot2
+ plotDendroAndColors(
+  netwk$dendrograms[[1]],# number of genes 
+  mergedColors[netwk$blockGenes[[1]]],
+  "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.05 )
+   ## plot out 
+    par(mfrow = c(1,2));
+    cex1 = 0.9;
+   
+    plot(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         xlab = "Soft Threshold (power)",
+         ylab = "Scale Free Topology Model Fit, signed R^2",
+         main = paste("Scale independence")
+    )
+    text(sft$fitIndices[, 1],
+         -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+         labels = powers, cex = cex1, col = "red"
+    )
+    abline(h = 0.90, col = "red")
+    plot(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         xlab = "Soft Threshold (power)",
+         ylab = "Mean Connectivity",
+         type = "n",
+         main = paste("Mean connectivity")
+    )
+    text(sft$fitIndices[, 1],
+         sft$fitIndices[, 5],
+         labels = powers,
+         cex = cex1, col = "red")
+dev.off()
+
+```
+
+#### plotting of the WGCNA 
+<https://alexslemonade.github.io/refinebio-examples/04-advanced-topics/network-analysis_rnaseq_01_wgcna.html>
+this page is where it talked about using limma linear model.
+```{r}
+IN.mME.module.plot <- IN.mME.module %>% ggplot(., aes(x=treatment, y=module, fill=value)) +
+  geom_tile() + geom_text(data=subset(IN.mME.module, value>0.1), aes(label = round(value, 1))) +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme_Publication()+ theme(axis.text.x = element_text(angle=90), axis.text = element_text(size = 2)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+EX.mME.module.plot <- EX.mME.module %>% ggplot(., aes(x=treatment, y=module, fill=value)) +
+  geom_tile() + geom_text(data=subset(EX.mME.module, value>0.1), aes(label = round(value, 1))) +
+  theme_bw() +
+  scale_fill_gradient2(
+    low = "blue",
+    high = "red",
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1,1)) +
+  theme_Publication()+ theme(axis.text.x = element_text(angle=90), axis.text = element_text(size = 2)) +
+  labs(title = "Module-trait Relationships", y = "Modules", fill="corr")
+
+pdf("mME.modules_marked.pdf",
+    width =5, height =8, onefile = TRUE)
+ggarrange(EX.mME.module.plot, IN.mME.module.plot, nrow=2)
+dev.off()
+
+#############
+## 4.10 Which modules have biggest differences across treatment groups?
+des_mat <- model.matrix(~ metadata$time_point)
+
+meta_df$TDFtime <- sapply(strsplit(meta_df$Sample, "_"), function(x) x[5])
+
+EX_meta_df$TDPtime  <- sapply(strsplit(EX_meta_df$Sample, "_"), function(x) x[5])
+IN_meta_df$TDPtime  <- sapply(strsplit(IN_meta_df$Sample, "_"), function(x) x[5])
+    colnames(EX_meta_df)[3] <- "TDPtime"
+    colnames(IN_meta_df)[3] <- "TDPtime"
+
+  ## the net
+IN_moEig<- INnetwk$MEs
+EX_moEig<- EXnetwk$MEs
+
+## 4.10 Which modules have biggest differences across treatment groups?
+
+### EX_
+# Create the design matrix from the `time_point` variable
+EX_des_mat <- model.matrix(~ EX_meta_df$TDPtime)
+  
+## run linear model 
+# lmFit() needs a transposed version of the matrix
+EX_fit <- limma::lmFit(t(EX_moEig), design = EX_des_mat)
+# Apply empirical Bayes to smooth standard errors
+EX_fit <- limma::eBayes(EX_fit)
+# Apply multiple testing correction and obtain stats
+EX_stats_df <- limma::topTable(EX_fit, number = ncol(EX_moEig)) %>%
+  tibble::rownames_to_column("module")
+
+EX_moEig_mod_df <- EX_moEig %>%
+  tibble::rownames_to_column("Sample") %>%
+  # Here we are performing an inner join with a subset of metadata
+  dplyr::inner_join(EX_meta_df %>%dplyr::select(Sample, TDPtime),by = c("Sample" = "Sample"))
+
+### IN_
+# Create the design matrix from the `time_point` variable
+IN_des_mat <- model.matrix(~ IN_meta_df$TDPtime)
+  
+## run linear model 
+# lmFit() needs a transposed version of the matrix
+IN_fit <- limma::lmFit(t(IN_moEig), design = IN_des_mat)
+# Apply empirical Bayes to smooth standard errors
+IN_fit <- limma::eBayes(IN_fit)
+# Apply multiple testing correction and obtain stats
+IN_stats_df <- limma::topTable(IN_fit, number = ncol(IN_moEig)) %>%
+  tibble::rownames_to_column("module")
+
+IN_moEig_mod_df <- IN_moEig %>%
+  tibble::rownames_to_column("Sample") %>%
+  # Here we are performing an inner join with a subset of metadata
+  dplyr::inner_join(IN_meta_df %>%dplyr::select(Sample, TDPtime),by = c("Sample" = "Sample"))
+
+############
+# Make list of variable names to loop over.Make plots -- list 
+  EX_plot_list = list()
+for (i in 1:nrow(EX_stats_df)) {
+    p = ggplot(EX_moEig_mod_df, aes_string(x="TDPtime", y=EX_stats_df$module[[i]], color="TDPtime")) +
+        geom_boxplot(width = 0.8, outlier.shape = NA,  lwd = 0.25) + ggforce::geom_sina(maxwidth = 0.8, size=0.2) + 
+      theme_Publication()+theme(legend.position = "none")+ylab(paste("EX",EX_stats_df$module[[i]],sep="-"))
+    EX_plot_list[[i]] = p
+}
+  IN_plot_list = list()
+for (i in 1:nrow(IN_stats_df)) {
+    p = ggplot(IN_moEig_mod_df, aes_string(x="TDPtime", y=IN_stats_df$module[[i]], color="TDPtime")) +
+        geom_boxplot(width = 0.8, outlier.shape = NA, lwd = 0.25) +ggforce::geom_sina(maxwidth = 0.8,size=0.2) + theme_Publication()+
+      theme(legend.position = "none")+ylab(paste("IN",IN_stats_df$module[[i]],sep="-"))
+    IN_plot_list[[i]] = p
+}
+
+#### combined all the plot so it will be the same size 
+pdf(file="EXIN_plot_list_modules_TDPtime.pdf", 
+     width = 7, height =10, onefile=TRUE)
+cowplot::plot_grid(plotlist=c(EX_plot_list,IN_plot_list), ncol=4, label_size = 0)
+dev.off() ## close
+
+####### the summary stat 
+## set up colors
+   IN_module_slim <- IN_module_df[,-1] %>% unique()
+   EX_module_slim <- EX_module_df[,-1] %>% unique()
+   
+   EX_module_col <- ArchRPalettes$calm[1:length(EX_module_slim$colors)]
+      names(EX_module_col) <- EX_module_slim$module %>% as.character()
+   IN_module_col <- ArchRPalettes$bear[1:length(IN_module_slim$colors)]
+      names(IN_module_col) <- IN_module_slim$module %>% as.character()
+
+####### the summary stat 
+EX_stats_df_plot <-EX_stats_df %>% mutate(module = factor(module, levels=rev(EX_stats_df$module))) %>% ggplot(., 
+                                      aes(x=module, y=-log10(adj.P.Val), fill=module)) +
+  geom_bar(stat="identity") + coord_flip()+ theme_Publication()+ theme(legend.position = "none")+
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black", size=0.25) + # at least 0.05
+      scale_fill_manual(values =EX_module_col)+ylim(0,4.5)+xlab("EX-modules")+ylab("Signed -log10(Padj)")
+IN_stats_df_plot <-IN_stats_df %>% mutate(module = factor(module, levels=rev(IN_stats_df$module))) %>% ggplot(., 
+                                      aes(x=module, y=-log10(adj.P.Val), fill=module)) +
+  geom_bar(stat="identity") + coord_flip()+ theme_Publication()+ theme(legend.position = "none")+
+  geom_hline(yintercept=1.3, linetype="dashed", color = "black", size=0.25) + # at least 0.05
+      scale_fill_manual(values =IN_module_col)+ylim(0,4.5)+xlab("IN-modules")+ylab("Signed -log10(Padj)")
+
+ggarrange(EX_stats_df_plot, IN_stats_df_plot, nrow=2)
+
+pdf("/Modules_padj_correlations.pdf",
+    width =2, height =3, onefile = TRUE)
+ggarrange(EX_stats_df_plot, IN_stats_df_plot, nrow=2, heights = c(16,12))
+dev.off()
+
+## set higher 0.01 FDR 
+
+
+EX_stats_df_plot <-EX_stats_df %>% mutate(module = factor(module, levels=rev(EX_stats_df$module))) %>% ggplot(., 
+                                      aes(x=module, y=-log10(adj.P.Val), fill=module)) +
+  geom_bar(stat="identity") + coord_flip()+ theme_Publication()+ theme(legend.position = "none")+
+  geom_hline(yintercept=2, linetype="dashed", color = "black", size=0.25) + # at least 0.05
+      scale_fill_manual(values =EX_module_col)+ylim(0,4.5)+xlab("EX-modules")+ylab("Signed -log10(Padj)")
+IN_stats_df_plot <-IN_stats_df %>% mutate(module = factor(module, levels=rev(IN_stats_df$module))) %>% ggplot(., 
+                                      aes(x=module, y=-log10(adj.P.Val), fill=module)) +
+  geom_bar(stat="identity") + coord_flip()+ theme_Publication()+ theme(legend.position = "none")+
+  geom_hline(yintercept=2, linetype="dashed", color = "black", size=0.25) + # at least 0.05
+      scale_fill_manual(values =IN_module_col)+ylim(0,4.5)+xlab("IN-modules")+ylab("Signed -log10(Padj)")
+
+pdf("Modules_padj_correlations_FDR001.pdf",
+    width =2, height =3, onefile = TRUE)
+ggarrange(EX_stats_df_plot, IN_stats_df_plot, nrow=2, heights = c(16,12))
+dev.off()
+
+```
+
+#### visulize WGCNA -- hub genes
+```{r}
+######## EX first 
+# calculate the module membership values
+## relating modules. 
+EX_datME<- moduleEigengenes(EX_datExpr, mergedColors)$eigengenes
+      #signif(cor(EX_datME, use="p"), 2) ##> checking only 
+  EX_dissimME=(1-t(cor(EX_datME, method="p")))/2
+  EX_hclustdatME=hclust(as.dist(EX_dissimME), method="average" )
+  # Plot the eigengene dendrogram
+  par(mfrow=c(1,1))
+plot(EX_hclustdatME, main="Clustering tree based of the module eigengenes-EX") ## --> but this is int he color terms. 
+
+### needs to change colors to ME numbers 
+EX_module_slim$MM <- paste()
+
+  ### hub genes -- # calculate the module membership values
+EX_datKME=signedKME(EX_datExpr, EX_datME, outputColumnName="")
+
+  ## rename the colme to match the ME # order then rename. 
+EX_datKME <- EX_datKME[,EX_module_slim$colors]
+colnames(EX_datKME) <- EX_module_slim$module
+
+for (i in 1:length(colnames(EX_datKME))) { #16 of it, 
+  print (colnames(EX_datKME)[i])
+  print(
+    dimnames(data.frame(EX_datExpr))[[2]][abs(EX_datKME[,i])>0.9] %>% length()
+  )
+}
+  #### how to make into a list thne onto the Go things? 
+# Make list of variable names to loop over.Make plots -- list 
+  EX_hub_lst = list()
+for (i in 1:length(colnames(EX_datKME))) { #16 of it, 
+  name <- colnames(EX_datKME)[i]
+    # tmp <-dimnames(data.frame(EX_datExpr))[[2]][abs(EX_datKME[,i])>0.8] #%>% length()
+  tmpdF <- EX_datKME %>% filter(abs(EX_datKME[,i])>0.8) %>% select(i)
+    #hold <- "1"
+  df <- data.frame(name=rownames(tmpdF), sKME=tmpdF[,1])
+  Etmp <- merge(df,fGenes_clean, by="name", all.x=TRUE, all.y=FALSE)[,-10]
+  EX_hub_lst[[name]] <- Etmp
+}
+
+### the GO things 
+  fGene_common_lst <- list(Common_Up=fGenesFDR_list_all_UpGene_common, Common_Down=fGenesFDR_list_all_DownGene_common)
+  EX_hub_lst_genes = lapply(EX_hub_lst, function(i) as.data.frame(i)$ENTREZID)
+           EX_hub_KEGG <- compareCluster(geneCluster   = EX_hub_lst_genes,
+                                   fun           = "enrichKEGG",
+                                   pvalueCutoff  = 0.05, #keyType = "ENTREZID",
+                                   pAdjustMethod = "BH")
+          EX_hub_goBP <- compareCluster(geneCluster   = EX_hub_lst_genes, OrgDb=org.Hs.eg.db,ont = "BP",
+                                   fun           = "enrichGO",
+                                   pvalueCutoff  = 0.05, #keyType = "ENTREZID",
+                                   pAdjustMethod = "BH")
+          EX_hub_goMF <- compareCluster(geneCluster   = EX_hub_lst_genes, OrgDb=org.Hs.eg.db,ont = "MF",
+                                   fun           = "enrichGO",
+                                   pvalueCutoff  = 0.05, #keyType = "ENTREZID",
+                                   pAdjustMethod = "BH") 
+
+pdf(file="EX_hub_lst_genes_GOs_plot-prep.pdf", 
+     width = 10, height = 10, onefile=TRUE)
+dotplot(EX_hub_KEGG, showCategory = 50, title = "KEGG Pathway Enrichment Analysis") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(EX_hub_goBP, showCategory = 50, title = "GO-biological processes Enrichment") + scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(EX_hub_goMF, showCategory = 50, title = "GO-Molecular function Enrichment") + scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(EX_hub_goBP, level=4), showCategory = 50, title = "goBP_slim level 4") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(EX_hub_goBP, level=3), showCategory = 50, title = "goBP_slim level 3") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(EX_hub_goBP, level=2), showCategory = 50, title = "goBP_slim level 2") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(EX_hub_goMF, level=4), showCategory = 50, title = "goMF_slim level 4") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(EX_hub_goMF, level=3), showCategory = 50, title = "goMF_slim level 3") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(EX_hub_goMF, level=2), showCategory = 50, title = "goMF_slim level 2") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dev.off()        
+                      
+## then GO on the ones that are shared 
+pdf(file="EX_hub_lst_genes_GOs_plot_good.pdf", 
+     width = 10, height = 10, onefile=TRUE)
+dotplot(EX_hub_KEGG, showCategory = 50, title = "KEGG Pathway Enrichment Analysis") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(EX_hub_goMF, showCategory = 50, title = "GO-Molecular function Enrichment") + scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dev.off() 
+
+ggplot(y[c(1,4,5,7,8),], # you can replace the numbers to the row number of pathway of your interest
+             aes(x = GeneRatio, y = Description)) + 
+             geom_point(aes(size = GeneRatio, color = p.adjust)) +
+             theme_bw(base_size = 14) +
+             scale_colour_gradient(limits=c(0, 0.10), low="red") +
+             ylab(NULL) +
+             ggtitle("GO pathway enrichment")
+
+EX_WGCNA <- c("ME3", "ME7", "ME9","ME10","ME14", "ME4", "ME1")
+EX_hub_goMFslim <- subset(as.data.frame(EX_hub_goMF), Cluster %in% EX_WGCNA)
+EX_hub_goMFslim$GeneRatio <- sapply(strsplit(EX_GeneRatio, "/"), function(x) x[1]) %>% as.numeric() /sapply(strsplit(EX_GeneRatio, "/"), function(x) x[2])%>% as.numeric() 
+
+pdf(file="EX_hub_GO-ME.pdf", 
+     width = 1.5, height = 1, onefile=TRUE)
+  na.omit(EX_hub_goMFslim[c(1,2,4,11,12,14,15,16,17,18,22)%>%as.character(),]) %>%
+          ggplot(aes(x = Cluster, y = Description)) + 
+             geom_point(aes(size = GeneRatio, color = p.adjust)) +
+             theme_bw(base_size = 4) + scale_size_continuous(range = c(0.1,2))+
+             scale_colour_gradient(limits=c(0, 0.05), low="red", high="blue") +
+             ylab(NULL) +
+             ggtitle("GO-MF enrichment")
+dev.off() 
+  na.omit(EX_hub_goMFslim[c(1,2,4,11,12,14,15,16,17,18,22)%>%as.character(),]) %>% #filter(p.adjust<=0.02) %>%
+
+####
+######################## IN 
+# calculate the module membership values
+## relating modules. mergedColors = labels2colors(INnetwk$colors)
+
+IN_datME<- moduleEigengenes(IN_datExpr, labels2colors(INnetwk$colors))$eigengenes
+      #signif(cor(EX_datME, use="p"), 2) ##> checking only 
+  IN_dissimME=(1-t(cor(IN_datME, method="p")))/2
+  IN_hclustdatME=hclust(as.dist(IN_dissimME), method="average" )
+  # Plot the eigengene dendrogram
+  par(mfrow=c(1,1))
+plot(IN_hclustdatME, main="Clustering tree based of the module eigengenes-IN") ## --> but this is int he color terms. 
+
+  ### hub genes -- # calculate the module membership values
+IN_datKME=signedKME(IN_datExpr, IN_datME, outputColumnName="")
+
+  ## rename the colme to match the ME # order then rename. 
+IN_datKME <- IN_datKME[,IN_module_slim$colors]
+colnames(IN_datKME) <- IN_module_slim$module
+
+for (i in 1:length(colnames(IN_datKME))) { #16 of it, 
+  print (colnames(IN_datKME)[i])
+  print(
+    dimnames(data.frame(IN_datExpr))[[2]][abs(IN_datKME[,i])>0.9] %>% length()
+  )
+}
+  #### how to make into a list thne onto the Go things? 
+# Make list of variable names to loop over.Make plots -- list 
+  IN_hub_lst = list()
+for (i in 1:length(colnames(IN_datKME))) { #16 of it, 
+  name <- colnames(IN_datKME)[i]
+    # tmp <-dimnames(data.frame(IN_datExpr))[[2]][abs(IN_datKME[,i])>0.8] #%>% length()
+  tmpdF <- IN_datKME %>% filter(abs(IN_datKME[,i])>0.8) %>% select(i)
+    #hold <- "1"
+  df <- data.frame(name=rownames(tmpdF), sKME=tmpdF[,1])
+  Etmp <- merge(df,fGenes_clean, by="name", all.x=TRUE, all.y=FALSE)[,-10]
+  IN_hub_lst[[name]] <- Etmp
+}
+
+### the GO things 
+  IN_hub_lst_genes = lapply(IN_hub_lst, function(i) as.data.frame(i)$ENTREZID)
+           IN_hub_KEGG <- compareCluster(geneCluster   = IN_hub_lst_genes,
+                                   fun           = "enrichKEGG",
+                                   pvalueCutoff  = 0.05, #keyType = "ENTREZID",
+                                   pAdjustMethod = "BH")
+          IN_hub_goBP <- compareCluster(geneCluster   = IN_hub_lst_genes, OrgDb=org.Hs.eg.db,ont = "BP",
+                                   fun           = "enrichGO",
+                                   pvalueCutoff  = 0.05, #keyType = "ENTREZID",
+                                   pAdjustMethod = "BH")
+          IN_hub_goMF <- compareCluster(geneCluster   = IN_hub_lst_genes, OrgDb=org.Hs.eg.db,ont = "MF",
+                                   fun           = "enrichGO",
+                                   pvalueCutoff  = 0.05, #keyType = "ENTREZID",
+                                   pAdjustMethod = "BH") 
+
+pdf(file="IN_hub_lst_genes_GOs_plot-prep.pdf", 
+     width = 10, height = 10, onefile=TRUE)
+dotplot(IN_hub_KEGG, showCategory = 50, title = "KEGG Pathway Enrichment Analysis") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(IN_hub_goBP, showCategory = 50, title = "GO-biological processes Enrichment") + scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(IN_hub_goMF, showCategory = 50, title = "GO-Molecular function Enrichment") + scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(IN_hub_goBP, level=4), showCategory = 50, title = "goBP_slim level 4") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(IN_hub_goBP, level=3), showCategory = 50, title = "goBP_slim level 3") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+#dotplot(gofilter(IN_hub_goBP, level=2), showCategory = 50, title = "goBP_slim level 2") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(IN_hub_goMF, level=4), showCategory = 50, title = "goMF_slim level 4") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(IN_hub_goMF, level=3), showCategory = 50, title = "goMF_slim level 3") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dotplot(gofilter(IN_hub_goMF, level=2), showCategory = 50, title = "goMF_slim level 2") +scale_y_discrete(labels=function(x) str_wrap(x, width=100))
+dev.off()        
+                      
+## then GO on the ones that are shared 
+
+IN_WGCNA <- c("ME3", "ME9","ME1")
+IN_hub_goMFslim <- subset(as.data.frame(IN_hub_goMF), Cluster %in% IN_WGCNA)
+IN_hub_goMFslim$GeneRatio <- sapply(strsplit(IN_hub_goMFslim$GeneRatio, "/"), function(x) x[1]) %>% as.numeric() /sapply(strsplit(IN_hub_goMFslim$GeneRatio, "/"), function(x) x[2])%>% as.numeric() 
+
+pdf(file="IN_hub_GO-ME.pdf", 
+     width = 1.83, height = 1, onefile=TRUE)
+  na.omit(IN_hub_goMFslim[c(6,16,17,25,44,50,78,81)%>%as.character(),]) %>% #filter(p.adjust<=0.02) %>%
+          ggplot(aes(x = Cluster, y = Description)) + 
+             geom_point(aes(size = GeneRatio, color = p.adjust)) +
+             theme_bw(base_size = 4) + scale_size_continuous(range = c(0.1,2))+
+             scale_colour_gradient(limits=c(0, 0.05), low="red", high="blue") +
+             ylab(NULL) +
+             ggtitle("GO-MF enrichment")
+dev.off() 
+  
+IN_hub_goMFslim_p <-   na.omit(IN_hub_goMFslim[c(6,16,17,25,44,50,78,81)%>%as.character(),]) %>% #filter(p.adjust<=0.02) %>%
+          ggplot(aes(x = Cluster, y = Description)) + 
+             geom_point(aes(size = GeneRatio, color = p.adjust)) +
+             theme_bw(base_size = 4) + scale_size_continuous(range = c(0.1,2))+
+             scale_colour_gradient(limits=c(0, 0.05), low="red", high="blue") +
+             ylab(NULL) +
+             ggtitle("GO-MF enrichment")
+```
+
+## Reverse deconvolution with pTDP-43 sorted bulk RNA-seq dataset 
+Reverse deconvolution with pTDP-43 sorted bulk RNA-seq datasets. Published RNA-seq datasets of FACS sorted pTDP-43 NeuN+ neurons were downloaded from the Gene Expression Omnibus (GEO) database under accession GSE126543 (59). Pseudo-bulk snRNA-seq data for each cell clusters were analyzed using CIBERSORTx (60) with default parameters.
+**CIBERSORTx** at  <https://cibersortx.stanford.edu/>
+
+#### Prepare multiome data to run the Reverse deconvolution with pTDP-43 sorted bulk RNA-seq dataset 
+```{r}
+#https://cibersortx.stanford.edu/tutorial.php
+## need the basic matrix 
+ArchR_C9
+
+## getting the SE matrix 
+
+### 3 ### then get the counts for EX  ###
+  ## rna
+ArchR_C9$type
+
+ArchR_C9.rna.type.SE <- 
+    getGroupSE(
+      ArchRProj = ArchR_C9, useMatrix = "GeneExpressionMatrix",
+      groupBy = "type", 
+      divideN = FALSE, threads = getArchRThreads(),verbose = TRUE, logFile = createLogFile("getGroupSE")
+      )
+ArchR_C9.rna.clu38TDP.SE <- 
+    getGroupSE(
+      ArchRProj = ArchR_C9, useMatrix = "GeneExpressionMatrix",
+      groupBy = "clu38TDP", 
+      divideN = FALSE, threads = getArchRThreads(),verbose = TRUE, logFile = createLogFile("getGroupSE")
+      )
+
+######### 
+   # need to replace row names with genes 
+  rownames(ArchR_C9.rna.type.SE) <- rowData(ArchR_C9.rna.type.SE)$name
+      rowData(ArchR_C9.rna.type.SE)
+  colData(ArchR_C9.rna.type.SE) # sample data are in the column 
+############# Should check if I already have the matrix -- hint DEseq 
+# this to get the per gene expression_count
+  t(as.matrix(assay(subset(ArchR_C9.rna.type.SE, rownames(ArchR_C9.rna.type.SE) %in% "C9orf72"))))
+
+  # so this is gene as rowname, the clusters ID as the 
+ArchR_C9.rna.type.SE.df <- round(assay(ArchR_C9.rna.type.SE)*100) %>% as.data.frame()
+  ArchR_C9.rna.type.SE.colnames <- ArchR_C9.rna.type.SE.df %>% colnames()
+
+write.table(data.frame(names = row.names(ArchR_C9.rna.type.SE.df), ArchR_C9.rna.type.SE.df),
+            sep="\t", row.name = FALSE, col.names = TRUE, quote = FALSE,
+            file="ArchR_C9.rna.type.SE.df.txt")  
+#####
+   # need to replace row names with genes 
+  rownames(ArchR_C9.allcells_genExp.SE.typeID.rds) <- rowData(ArchR_C9.allcells_genExp.SE.typeID.rds)$name
+      rowData(ArchR_C9.allcells_genExp.SE.typeID.rds)
+  colData(ArchR_C9.allcells_genExp.SE.typeID.rds) # sample data are in the column 
+  
+  ArchR_C9.allcells_genExp.SE.typeID.colnames <- round(assay(ArchR_C9.allcells_genExp.SE.typeID.rds)*100) %>% as.data.frame() %>% colnames()
+  ArchR_C9.allcells_genExp.SE.typeID.df <- round(assay(ArchR_C9.allcells_genExp.SE.typeID.rds)*100) %>% as.data.frame()
+  
+  colnames(ArchR_C9.allcells_genExp.SE.typeID.df) <- 
+    paste(sapply(strsplit(ArchR_C9.allcells_genExp.SE.typeID.colnames, "_"), function(x) x[1]),
+        sapply(strsplit(ArchR_C9.allcells_genExp.SE.typeID.colnames, "_"), function(x) x[2]), sep="_")
+
+  write.table(data.frame(names = row.names(ArchR_C9.allcells_genExp.SE.typeID.df), ArchR_C9.allcells_genExp.SE.typeID.df)
+              , sep="\t", row.name = FALSE, col.names = TRUE, quote = FALSE,
+            file="ArchR_C9.allcells_genExp.SE.typeID.df.txt")   
+  
+
+### convert the bulk RNAseq from the TDPpaper 
+  # $ cat GSE126542_NeuronalNuclei_RNAseq_counts.txt | gawk '$1!="NA"' > GSE126542_NeuronalNuclei_RNAseq_counts_noNA.txt
+
+  NeuN_RNAseq <- read.table("GSE126542_NeuronalNuclei_RNAseq_counts_noNA.txt", 
+             header = TRUE, row.names = 1)
+  
+  colnames(NeuN_RNAseq) <- sapply(strsplit(colnames(NeuN_RNAseq), "_"), function(x) x[2])
+
+   write.table(data.frame(names = row.names(NeuN_RNAseq), NeuN_RNAseq)
+              , sep="\t", row.name = FALSE, col.names = TRUE, quote = FALSE,
+            file="NeuN_RNAseq_grouped.txt")   
+
+   
+#### Needs the reps for buildig the matrix 
+  ######### 
+   # need to replace row names with genes 
+  rownames(ArchR_C9.allcells_genExp.SE.clu38ID.rds) <- rowData(ArchR_C9.allcells_genExp.SE.clu38ID.rds)$name
+      rowData(ArchR_C9.allcells_genExp.SE.clu38ID.rds)
+  colData(ArchR_C9.allcells_genExp.SE.clu38ID.rds) # sample data are in the column 
+  
+  ArchR_C9.allcells_genExp.SE.clu38ID.colnames <- round(assay(ArchR_C9.allcells_genExp.SE.clu38ID.rds)*100) %>% as.data.frame() %>% colnames()
+  ArchR_C9.allcells_genExp.SE.clu38ID.df <- round(assay(ArchR_C9.allcells_genExp.SE.clu38ID.rds)*100) %>% as.data.frame()
+  
+### "C10_ODC-CTL-E05_74"  ----> "C10_ODC_CTL" 
+  colnames(ArchR_C9.allcells_genExp.SE.clu38ID.df) <- 
+    paste(sapply(strsplit(ArchR_C9.allcells_genExp.SE.clu38ID.colnames, "-"), function(x) x[1]),
+        sapply(strsplit(ArchR_C9.allcells_genExp.SE.clu38ID.colnames, "-"), function(x) x[2]), sep="_")
+
+  write.table(data.frame(names = row.names(ArchR_C9.allcells_genExp.SE.clu38ID.df), ArchR_C9.allcells_genExp.SE.clu38ID.df)
+              , sep="\t", row.name = FALSE, col.names = TRUE, quote = FALSE,
+            file="ArchR_C9.allcells_genExp.SE.clu38ID.df.txt")     
+
+  ## use the same df then group into all 
+  ArchR_C9.allcells_genExp.SE.clu38ID.df2 <- ArchR_C9.allcells_genExp.SE.clu38ID.df
+ colnames(ArchR_C9.allcells_genExp.SE.clu38ID.df2) <- 
+    paste(sapply(strsplit(colnames(ArchR_C9.allcells_genExp.SE.clu38ID.df), "_"), function(x) x[1]),
+        sapply(strsplit(colnames(ArchR_C9.allcells_genExp.SE.clu38ID.df), "_"), function(x) x[2]), sep="_")
+
+  write.table(data.frame(names = row.names(ArchR_C9.allcells_genExp.SE.clu38ID.df2), ArchR_C9.allcells_genExp.SE.clu38ID.df2)
+              , sep="\t", row.name = FALSE, col.names = TRUE, quote = FALSE,
+            file="ArchR_C9.allcells_genExp.SE.clu38ID.df.grouped.txt")     
+```
+
+#### Statistics after CIBERSORTx
+```{r}
+# the CIBERSORTx output matrix 
+  DEcon_job14_RNAseq <- read.table("CIBERSORTx_Job_Results.txt", 
+             header = TRUE)
+
+   rownames(DEcon_job14_RNAseq) <- paste(sapply(strsplit(DEcon_job14_RNAseq$Mixture, "_"), function(x) x[2]),
+                                        sapply(strsplit(DEcon_job14_RNAseq$Mixture, "_"), function(x) x[1]), sep="-")
+   colnames(DEcon_job14_RNAseq2)
+
+   DEcon_job14_RNAseqNeu <- DEcon_job14_RNAseq[order(row.names(DEcon_job14_RNAseq)), ] %>% dplyr::select(
+     -Mixture, -C1_Unassigned, -P.value,-Correlation,-RMSE) %>% dplyr::select(
+        c("C11_EX","C12_EX","C14_EX","C15_EX","C16_EX" ,"C17_EX","C18_EX","C19_EX","C20_EX","C21_EX",
+          "C13_IN","C22_IN","C23_IN","C24_IN","C25_IN","C26_IN"))
+   
+   DEcon_job14_RNAseqNeu2 <- DEcon_job14_RNAseq  %>% dplyr::select(
+     -Mixture, -C1_Unassigned, -P.value,-Correlation,-RMSE) %>% dplyr::select(
+        c("C11_EX","C12_EX","C14_EX","C15_EX","C16_EX" ,"C17_EX","C18_EX","C19_EX","C20_EX","C21_EX",
+          "C13_IN","C22_IN","C23_IN","C24_IN","C25_IN","C26_IN")) %>%   
+
+     
+## box plot
+DEcon_job14_RNAseqNeu3 <- DEcon_job14_RNAseqNeu  
+  colnames(DEcon_job14_RNAseqNeu3) <- paste(sapply(strsplit(colnames(DEcon_job14_RNAseqNeu3), "_"), function(x) x[2]),
+                                            sapply(strsplit(colnames(DEcon_job14_RNAseqNeu3), "_"), function(x) x[1]), sep="-")
+  DEcon_job14_RNAseqNeu3$NeuSort <- sapply(strsplit(rownames(DEcon_job14_RNAseqNeu3), "-"), function(x) x[1])
+
+DEcon_job14_RNAseqNeu_long <- tidyr::gather(DEcon_job14_RNAseqNeu3, "clu38", "fraction", -NeuSort) %>% as.data.frame()
+
+## getting the p-valye 
+compare_means(fraction ~ NeuSort, data = DEcon_job14_RNAseqNeu_long, 
+              group.by = "clu38", paired = FALSE, method="t.test")
+
+
+pdf(file="DEcon_RNAseqNeu_boxplot1.pdf", 
+    width = 3, height = 2.5, onefile = TRUE)
+ggplot(DEcon_job14_RNAseqNeu_long, aes(x=clu38, y=fraction, fill=NeuSort)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(0.8), alpha = 0.8, lwd=0.2)+
+  scale_fill_manual(values = c("#80b1d3", "#fdb462")) +theme_Publication() +
+  stat_compare_means(aes(group = NeuSort), label = "p.signif", method = "t.test",hide.ns = FALSE, size=1)
+  #scale_color_manual(values = c("#00AFBB", "#E7B800")) 
+ggplot(DEcon_job14_RNAseqNeu_long, aes(x=clu38, y=fraction, fill=NeuSort)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(0.8), alpha = 0.8, lwd=0.2)+
+  geom_dotplot(
+    aes(fill = NeuSort, color = NeuSort), 
+    binaxis='y', stackdir='center', dotsize = 0.3,
+    position = position_dodge(0.8), color=NA)+
+  scale_fill_manual(values = c("#80b1d3", "#fdb462")) +theme_Publication()
+  #scale_color_manual(values = c("#00AFBB", "#E7B800"))
+DEcon_job14_RNAseqNeu_long %>% dplyr::filter(grepl('IN', clu38)) %>% ggplot(aes(x=clu38, y=fraction, fill=NeuSort)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(0.8), alpha = 0.8, lwd=0.2)+
+  geom_dotplot(
+    aes(fill = NeuSort, color = NeuSort), 
+    binaxis='y', stackdir='center', dotsize = 0.3,
+    position = position_dodge(0.8), color=NA)+
+  scale_fill_manual(values = c("#80b1d3", "#fdb462")) +theme_Publication()
+  #scale_color_manual(values = c("#00AFBB", "#E7B800"))
+DEcon_job14_RNAseqNeu_long %>% dplyr::filter(grepl('EX', clu38)) %>% ggplot(aes(x=clu38, y=fraction, fill=NeuSort)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(0.8), alpha = 0.8, lwd=0.2)+
+  geom_dotplot(
+    aes(fill = NeuSort, color = NeuSort), 
+    binaxis='y', stackdir='center', dotsize = 0.3,
+    position = position_dodge(0.8), color=NA)+
+  scale_fill_manual(values = c("#80b1d3", "#fdb462")) +theme_Publication()
+  #scale_color_manual(values = c("#00AFBB", "#E7B800"))
+
+ dev.off() 
+```
+
+## Differential cell abundance analysis
+To identify differences in cell composition across the donor groups with different levels of pTDP-43 in each cell cluster in each major cell type, we calculated the relative percentage of each cluster in each major cell type for each sample. The differential cell proportions were estimated using Kruskal-Wallis test with Benjamini-Hochberg correction comparing the control with different pTDP-43 level groups. P-values > 0.05 were considered not significant. For the neuronal clusters, the significance of differential abundance was further analyzed using MASC (102), which considers the mixed-effect model with a binomial distribution accounting for technical confounders and biological variation. We included the following fixed covariates in the model: sex, sample status (control and C9orf72 ALS/FTD cases), and level of pTDP-43. Cell clusters were considered significant at FDR-adjusted P < 0.05 and absolute odds ratio >0. The results of MASC analysis are shown in Fig. 6G.
+## cell types estimates
+```{r}
+library(devtools)
+library(MASC)
+library(lme4)
+### so covert into my own data frmae in the context of EX-NEU -- each row is a cell. 
+
+EX_ct_df <- ArchR_C9_Neu_NeuTypeTDPRep_ct %>% filter(ExIn=="EX") %>% select(1,2,3,4,5,6)
+
+EX_ct_df$donor <- paste(sapply(strsplit(EX_ct_df$name %>% as.character(), "_"), function(x) x[4]), sapply(strsplit(EX_ct_df$name %>% as.character(), "_"), function(x) x[5]), sep="_")
+EX_ct_df <- merge(EX_ct_df, C9_samplex_sex, by="donor")
+EX_ct_df$cluster <- paste(sapply(strsplit(EX_ct_df$name %>% as.character(), "_"), function(x) x[1]), sapply(strsplit(EX_ct_df$name %>% as.character(), "_"), function(x) x[2]), 
+                          sapply(strsplit(EX_ct_df$name %>% as.character(), "_"), function(x) x[3]),sep="_")
+
+EX_ct_df <- EX_ct_df %>% select(-name, -ExIn, -NeuGrp, -rep)
+
+EX_ct_df <- as.data.frame(lapply(EX_ct_df, rep, EX_ct_df$typeTDP_ct ), stringsAsFactors = TRUE)
+
+nrow(EX_ct_df)
+
+EX_ct_df_highTDP <- EX_ct_df %>% filter(typeTDP!="noTDP") %>% filter( typeTDP!="medTDP")
+  EX_ct_df_highTDP_MASC <- MASC(data = EX_ct_df_highTDP, cluster = EX_ct_df_highTDP$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+  
+EX_ct_df_noTDP <- EX_ct_df %>% filter(typeTDP!="highTDP") %>% filter( typeTDP!="medTDP") %>% droplevels()
+  EX_ct_df_noTDP_MASC <- MASC(data = EX_ct_df_noTDP, cluster = EX_ct_df_noTDP$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+EX_ct_df_medTDP <- EX_ct_df %>% filter(typeTDP!="highTDP") %>% filter( typeTDP!="noTDP") %>% droplevels()
+  EX_ct_df_medTDP_MASC <- MASC(data = EX_ct_df_medTDP, cluster = EX_ct_df_medTDP$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+
+### try the per cluster counts 
+ArchR_C9_Neu_NeuTypeTDPRep_ct <-  table(ArchR_C9_Neu$NeuTypeTDPRep) %>% as.data.frame()
+  ArchR_C9_Neu$NeuClu38TDPrep <- paste(ArchR_C9_Neu$NeuClu38TDPgrp, ArchR_C9_Neu$TDPRep,sep="_")
+
+  NeuClu38TDPrep_ct <- table(ArchR_C9_Neu$NeuClu38TDPrep) %>% as.data.frame()
+colnames(NeuClu38TDPrep_ct) <- c("name", "count")
+  NeuClu38TDPrep_ct$donor <- paste(sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[6]), 
+                                  sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[7]), sep="_")
+    NeuClu38TDPrep_ct <- merge(NeuClu38TDPrep_ct, C9_samplex_sex, by="donor")
+NeuClu38TDPrep_ct$cluster <- paste(sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[1]), 
+                                   sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[2]),
+                                   sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[3]),
+                                   sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[4]),sep="_")
+NeuClu38TDPrep_ct$typeTDP <- sapply(strsplit(NeuClu38TDPrep_ct$name %>% as.character(), "_"), function(x) x[6])
+## clean up   
+NeuClu38TDPrep_ct <- NeuClu38TDPrep_ct %>% select(-name)
+sum(NeuClu38TDPrep_ct$count)
+  #[1] 19432
+
+NeuClu38TDPrep_ct <- as.data.frame(lapply(NeuClu38TDPrep_ct, rep, NeuClu38TDPrep_ct$count ), stringsAsFactors = TRUE)
+  nrow(NeuClu38TDPrep_ct) # [1] 19432
+MASC(data = NeuClu38TDPrep_ct, cluster = NeuClu38TDPrep_ct$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+  
+### do it specifically 
+NeuClu38TDPrep_ct_highTDP <- NeuClu38TDPrep_ct %>% filter(typeTDP!="noTDP") %>% filter( typeTDP!="medTDP") %>% droplevels()
+  NeuClu38TDPrep_ct_highTDP_MASC <- MASC(data = NeuClu38TDPrep_ct_highTDP, cluster = NeuClu38TDPrep_ct_highTDP$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+NeuClu38TDPrep_ct_noTDP <- NeuClu38TDPrep_ct %>% filter(typeTDP!="highTDP") %>% filter( typeTDP!="medTDP") %>% droplevels()
+  NeuClu38TDPrep_ct_noTDP_MASC <- MASC(data = NeuClu38TDPrep_ct_noTDP, cluster = NeuClu38TDPrep_ct_noTDP$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+NeuClu38TDPrep_ct_medTDP <- NeuClu38TDPrep_ct %>% filter(typeTDP!="highTDP") %>% filter( typeTDP!="noTDP") %>% droplevels()
+  NeuClu38TDPrep_ct_medTDP_MASC <- MASC(data = NeuClu38TDPrep_ct_medTDP, cluster = NeuClu38TDPrep_ct_medTDP$cluster, contrast = "typeTDP", random_effects = "donor", fixed_effects = "sex")
+     colnames(NeuClu38TDPrep_ct_highTDP_MASC[3]) <- "highTDP.FDR"
+  
+Neu_MASC <-   merge(merge(
+       NeuClu38TDPrep_ct_highTDP_MASC %>% select(1,3,4), NeuClu38TDPrep_ct_noTDP_MASC %>% select(1,3,4), by="cluster", suffixes = c(".highTDP",".noTD")), 
+     NeuClu38TDPrep_ct_medTDP_MASC%>% select(1,3,4), by="cluster")
+  
+
+colnames(Neu_MASC) <- c("cluster","FDR.highTDP" ,"highTDP.OR", "FDR.noTDP", "noTDP.OR", "FDR.medTDP", "medTDP.OR")
+Neu_MASC$cluster <- gsub("cluster", "", Neu_MASC$cluster)
+Neu_MASC$cluster <- paste(sapply(strsplit(Neu_MASC$cluster %>% as.character(), "_"), function(x) x[3]),"_",
+                                   sapply(strsplit(Neu_MASC$cluster %>% as.character(), "_"), function(x) x[1]),"-",
+                                   sapply(strsplit(Neu_MASC$cluster %>% as.character(), "_"), function(x) x[4])," (",
+                                   sapply(strsplit(Neu_MASC$cluster %>% as.character(), "_"), function(x) x[2]),")",sep="")
+
+Neu_MASC$yes.highTDP <- "NO"
+Neu_MASC$yes.highTDP[Neu_MASC$FDR.highTDP <=0.05] <- "Sig"
+Neu_MASC$yes.medTDP <- "NO"
+Neu_MASC$yes.medTDP[Neu_MASC$FDR.medTDP <=0.05] <- "Sig"
+Neu_MASC$yes.noTDP <- "NO"
+Neu_MASC$yes.noTDP[Neu_MASC$FDR.noTDP <=0.05] <- "Sig"
+
+# Re-plot but this time color the points with "diffexpressed"
+pdf(file="MASC_volcano-prep.pdf", 
+     width = 10, height =4, onefile=TRUE)
+ggarrange(
+ggplot(data=Neu_MASC, #%>% filter(FDR.highTDP <=0.05), 
+            aes(x=log2(highTDP.OR), y=-log10(FDR.highTDP), col=yes.highTDP, label=cluster)) + geom_point(alpha = 1, size=0.4) + theme_minimal()+
+  geom_text_repel(data=Neu_MASC %>% filter(FDR.highTDP <=0.05), box.padding = 0.5, max.overlaps = Inf, size=2.2, segment.size=0.1)+ #+scale_x_sqrt()
+  scale_colour_manual(values = c(NO="black", "Sig"="red"))+theme_Publication()+ylim(0,3.5),
+ggplot(data=Neu_MASC, #%>% filter(FDR.medTDP <=0.05), 
+            aes(x=log2(medTDP.OR), y=-log10(FDR.medTDP), col=yes.medTDP, label=cluster)) + geom_point(alpha = 1, size=0.4) + theme_minimal()+
+  geom_text_repel(data=Neu_MASC %>% filter(FDR.medTDP <=0.05), box.padding = 0.5, max.overlaps = Inf, size=2.2, segment.size=0.1)+ #+scale_x_sqrt()
+  scale_colour_manual(values = c(NO="black", "Sig"="red"))+theme_Publication()+ylim(0,3.5),
+ggplot(data=Neu_MASC, #%>% filter(FDR.noTDP <=0.05), 
+            aes(x=log2(noTDP.OR), y=-log10(FDR.noTDP), col=yes.noTDP, label=cluster)) + geom_point(alpha = 1, size=0.4) + theme_minimal()+
+  geom_text_repel(data=Neu_MASC %>% filter(FDR.noTDP <=0.05), box.padding = 0.5, max.overlaps = Inf, size=2.2, segment.size=0.1)+ #+scale_x_sqrt()
+  scale_colour_manual(values = c(NO="black", "Sig"="red"))+theme_Publication()+ylim(0,3.5),
+nrow=1, ncol=3)
+
+dev.off() ## close
+
+
+write.csv2(Neu_MASC, 
+           "")
+
+write.table(Neu_MASC,
+            sep="\t", row.name = FALSE, col.names = TRUE, quote = FALSE,
+            file="Neu_MASC.txt")  
+
+##### 
+
+```
+

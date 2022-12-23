@@ -1,0 +1,204 @@
+---
+title: "c9alsftd_multiome - Ambient RNA analysis"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## Load required packages and graphical set up
+```{r}
+library(ArchR)
+library(parallel)
+library(monocle3)
+library(tidyselect)
+library(tidygraph)
+library(tidytree
+library(tidyr
+library(tidyverse)
+library(parallel)
+library(monocle3)
+library(cicero)
+
+# https://rpubs.com/Koundy/71792
+# remove all bold text
+theme_Publication <- function(base_size=7, base_family="sans") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black", size = 0.2),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(t = 0, unit='cm'),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text()
+          ))
+      
+}
+
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+## loading packages
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) # Need to run for the right genome version. 
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+library(org.Hs.eg.db)
+library(ggupset)
+library(ReactomePA)
+library(clusterProfiler) # the GO part
+library(grid)
+library(gghighlight)
+library(DOSE)
+library(ggplot2)
+library(cowplot)
+library(wesanderson)
+library(ReactomePA)
+library("pathview")
+library(annotate)
+library(GenomicFeatures)
+
+options(ChIPseeker.downstreamDistance = 3000) # this can be used to defined the options. 
+options(ChIPseeker.ignore_1st_exon = TRUE)
+options(ChIPseeker.ignore_1st_intron = TRUE)
+options(ChIPseeker.ignore_downstream = TRUE) # put all into intergenic regions
+options(ChIPseeker.ignore_promoter_subcategory = TRUE)
+
+```
+
+## basic environment setup to run ArchR v1.0.2 or the most recent develop version
+Find **ArchR** information at <https://www.archrproject.com/index.html>
+Additional information about running **ArchR** multiomic pipeline: 
+<https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html>
+```{r}
+set.seed(1)
+addArchRThreads(threads = 100)
+addArchRGenome("hg38")
+getArchRGenome()
+```
+
+### ambient RNAs estimation using SoupX and generate corrected count matrix
+follow **SoupX** pipeline directions in <https://github.com/constantAmateur/SoupX>
+After generating the SoupX ambient RNA removed count matrix, follow the same steps in differential gene expression comparison. 
+```{r}
+# load 
+library(SoupX)
+library(DropletUtils)
+
+### SoupX pipeline -- need to use 10x dataformat version 3
+for (U in 1:14) {
+  print("+++++++++++++++++++")
+  print("START the loop")
+  print(U)
+  print(Samples_names[U])
+PWD_out <- paste(Samples_names[U], "/outs/", sep="")
+clu_csv <- paste(Samples_names[U], "/outs/analysis/clustering/gex/graphclust/clusters.csv", sep="")
+out_count <- paste(Samples_names[U], "/outs/strainedCounts", sep="")
+out_HDF5 <- paste(Samples_names[U], "/outs/GexSoupX_",Samples_names[U],".h5",sep="")
+
+  print("load data and estimate profile")  
+sc = load10X(PWD_out)
+  # Channel with 36601 genes and 2018 cells
+
+  print("set clusters")
+clu_csv_df <- read.table(clu_csv,row.names = 1, sep=",", header = TRUE)
+sc = setClusters(sc, setNames(clu_csv_df$Cluster, rownames(clu_csv_df)))
+
+  print("Estimate rho")
+sc = autoEstCont(sc, doPlot = TRUE, verbose = TRUE)
+      #head(sc$soupProfile[order(sc$soupProfile$est, decreasing = TRUE), ], n = 10)
+  print("Clean the data")
+out = adjustCounts(sc, roundToInt=TRUE)
+  #Expanding counts from 7 clusters to 2018 cells.
+  print("write both the mat folder and the HDF5")
+DropletUtils:::write10xCounts(out_count, out, overwrite=TRUE, version="3")
+DropletUtils:::write10xCounts(out_HDF5, out, type = "HDF5", overwrite=TRUE, version="3")
+rm(sc)
+rm(out)
+}
+
+### make the list, all 
+  soupXlst <- data.frame(soupX=paste(sampleC9_list_names, "/outs/strainedCounts/", sep=""), names=sampleC9_list_names)
+
+soupXlst_se <- read10xCounts(samples = soupXlst$soupX, 
+                      sample.names = soupXlst$names, col.names = TRUE, type = "auto", version = "3", genome = NULL)
+#rename the barcode name based on samples
+colnames(soupXlst_se) <- paste(colData(soupXlst_se)$Sample,colData(soupXlst_se)$Barcode, sep = "#")
+  
+## then make the rowData the same as original archR seRNA
+soupXlst_seRNA2 <- soupXlst_se[rownames(seRNA),]
+rowData(soupXlst_seRNA2) <- rowData(seRNA)
+
+ArchR_C9_soupX_RNA <- addGeneExpressionMatrix(input = ArchR_C9_soupX, seRNA = soupXlst_seRNA2, force = TRUE)
+```
+
+### incorporate the SoupX adjusted count matrix into the ArchR project 
+```{r}
+## source code, the write10x Counts can be used. 
+  #DropletUtils:::write10xCounts(out_HDF5, out, type = "HDF5", overwrite=TRUE)
+ArchR_C9_soupX <- ArchR_C9
+
+# test with two first 
+          Samples_names[c(1,2)]
+          soupXlst <- data.frame(soupX=paste("/mnt/Lola/C9ALS/x_batch2/2_counts/", Samples_names[c(1,2)], "/outs/strainedCounts/", sep=""), names=Samples_names[c(1,2)])
+
+### make the list, all 
+  soupXlst <- data.frame(soupX=paste("/mnt/Lola/C9ALS/x_batch2/2_counts/", sampleC9_list_names, "/outs/strainedCounts/", sep=""), names=sampleC9_list_names)
+
+## original seRNAs 
+    #saveRDS(seRNA, "/mnt/Lola/C9ALS/5_archR2/saveRDS/C9ALS_14sam_geneExpMat_20220127.rds")
+seRNA <- readRDS("/mnt/Lola/C9ALS/5_archR2/saveRDS/C9ALS_14sam_geneExpMat_20220127.rds")
+
+## some answer 
+      # https://github.com/GreenleafLab/ArchR/issues/1084
+  # 1 #   #seRNA was created by first creating a "SingleCellExperiment" object with DropletUtils read10xCounts function that utilizes the feature matrix, barcodes, and rna features
+soupXlst_se <- read10xCounts(samples = soupXlst$soupX, 
+                      sample.names = soupXlst$names, col.names = TRUE, type = "auto", version = "3", genome = NULL)
+#rename the barcode name based on samples
+colnames(soupXlst_se) <- paste(colData(soupXlst_se)$Sample,colData(soupXlst_se)$Barcode, sep = "#")
+  
+## then make the rowData the same as original archR seRNA
+soupXlst_seRNA2 <- soupXlst_se[rownames(seRNA),]
+rowData(soupXlst_seRNA2) <- rowData(seRNA)
+##then make the single cell EXP as the Ranged-SE: SingleCellExperiment object was then converted to RangedSummarizedExperiment with
+  soupXlst_seRNA3 <- as(soupXlst_seRNA2, "RangedSummarizedExperiment")
+
+  # borrow info from the original seRNA
+    soupXlst_seRNA4 <- seRNA
+  assay(soupXlst_seRNA4) <- assay(soupXlst_seRNA3)
+
+## then try to add the matrix into ArchR    
+  ArchR_C9_soupX <- addGeneExpressionMatrix(input = ArchR_C9_soupX, seRNA = soupXlst_seRNA4, force = TRUE)
+### ---> next for differential gene expression analysis based.
+```

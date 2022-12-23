@@ -1,0 +1,701 @@
+---
+title: "c9alsftd_multiome - Neuronal clusters analysis - WGCNA, deconvolutions, etc"
+author: "Hsiao-Lin Veronica Wang | Corces Lab | Ddepartment of Human Genetics | Emory University School of Medicine"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(eval = FALSE)
+```
+
+## Load required packages and graphical set up
+```{r}
+library(ArchR)
+library(parallel)
+library(monocle3)
+library(tidyselect)
+library(tidygraph)
+library(tidytree
+library(tidyr
+library(tidyverse)
+library(parallel)
+library(monocle3)
+library(cicero)
+
+# https://rpubs.com/Koundy/71792
+# remove all bold text
+theme_Publication <- function(base_size=7, base_family="sans") {
+      library(grid)
+      library(ggthemes)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black", size = 0.2),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.position = "bottom",
+               legend.direction = "horizontal",
+               legend.key.size= unit(0.2, "cm"),
+               legend.margin = margin(t = 0, unit='cm'),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text()
+          ))
+      
+}
+
+scale_fill_Publication <- function(...){
+      library(scales)
+      discrete_scale("fill","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+scale_colour_Publication <- function(...){
+      library(scales)
+      discrete_scale("colour","Publication",manual_pal(values = c("#386cb0","#fdb462","#7fc97f","#ef3b2c","#662506","#a6cee3","#fb9a99","#984ea3","#ffff33")), ...)
+
+}
+
+## loading packages
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg38.knownGene) # Need to run for the right genome version. 
+txdb <- TxDb.Hsapiens.UCSC.hg38.knownGene
+library(org.Hs.eg.db)
+library(ggupset)
+library(ReactomePA)
+library(clusterProfiler) # the GO part
+library(grid)
+library(gghighlight)
+library(DOSE)
+library(ggplot2)
+library(cowplot)
+library(wesanderson)
+library(ReactomePA)
+library("pathview")
+library(annotate)
+library(GenomicFeatures)
+
+options(ChIPseeker.downstreamDistance = 3000) # this can be used to defined the options. 
+options(ChIPseeker.ignore_1st_exon = TRUE)
+options(ChIPseeker.ignore_1st_intron = TRUE)
+options(ChIPseeker.ignore_downstream = TRUE) # put all into intergenic regions
+options(ChIPseeker.ignore_promoter_subcategory = TRUE)
+
+```
+
+## basic environment setup to run ArchR v1.0.2 or the most recent develop version
+Find **ArchR** information at <https://www.archrproject.com/index.html>
+Additional information about running **ArchR** multiomic pipeline: 
+<https://greenleaflab.github.io/ArchR_2020/Ex-Analyze-Multiome.html>
+```{r}
+set.seed(1)
+addArchRThreads(threads = 100)
+addArchRGenome("hg38")
+getArchRGenome()
+```
+
+## oligodendrocyte lineage cells specific analysis
+Including cell portions comparison, UMAPs, etc
+```{r}
+ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="ODC")]
+ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="OPC")]
+
+### isolate both (and/or) 
+ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="EX" | ArchR_C9$type2name =="IN")]
+ArchR_C9_OD <- ArchR_C9[BiocGenerics::which(ArchR_C9$type2name =="ODC" | ArchR_C9$type2name =="OPC")]
+ArchR_C9_OD <-addImputeWeights(ArchR_C9_OD, reducedDims = "allcells-combined-Ham")
+
+getReducedDims(ArchR_C9_OD)
+getEmbedding(ArchR_C9_OD)
+
+## make x wider -- too compact
+ArchR_C9_ODOnly <- plotEmbedding(ArchR_C9_OD, embedding = "allcells-combined-Ham-UMAP3", 
+                                  alpha = 1,#baseSize=0, 
+                             size =0.2, plotAs = "points", #defaultColor = "grey95", 
+                                       colorBy = "cellColData", name = "clu38", discreteSet = "bear",
+                             #pal=col.MG,  
+                             ratioYX=0.8,
+                             bgWidth=1.2, labelSize=0)
+
+pdf(file="UMAP_ArchR_C9.OD_Only.pdf", 
+     width = 4, height =4)
+  ## Plot it:
+ArchR_C9_ODOnly
+dev.off() ## close
+
+### set the same colors as on the bar plot 
+col.OD <- c(brewer.pal(name="PuRd", n = 9)[c(9,5,3)], brewer.pal(name="Greens", n = 9)[c(9,5,3)],brewer.pal(name="Blues", n = 9)[c(9,6,4)])
+names(col.OD) <- c("C32","C33","C34","C4","C6","C7","C8","C9","C10")
+
+ArchR_C9_ODOnly_v2 <- plotEmbedding(ArchR_C9_OD, embedding = "allcells-combined-Ham-UMAP3", 
+                                  alpha = 1,#baseSize=0, 
+                             size =0.2, plotAs = "points", #defaultColor = "grey95", 
+                                       colorBy = "cellColData", name = "clu38", #discreteSet = "bear",
+                             pal=col.OD,  
+                             ratioYX=0.8,
+                             bgWidth=1.2, labelSize=0)
+pdf(file="UMAP_ArchR_C9.OD_Only_v2.pdf", 
+     width = 4, height =4)
+  ## Plot it:
+ArchR_C9_ODOnly_v2
+dev.off() ## close
+
+#############
+### then the count 
+
+ArchR_C9_OD_typeTDP_ct <- table(ArchR_C9_OD$clu38TDP) %>% as.data.frame()
+
+colnames(ArchR_C9_OD_typeTDP_ct) <- c("name", "typeTDP_ct")
+ArchR_C9_OD_typeTDP_ct$clu <- sapply(strsplit(ArchR_C9_OD_typeTDP_ct$name %>% as.character(), "_"), function(x) x[1])
+ArchR_C9_OD_typeTDP_ct$typeTDP <- sapply(strsplit(ArchR_C9_OD_typeTDP_ct$name %>% as.character(), "_"), function(x) x[2])
+
+#sum values in column 3 where col1 is equal to 'A'
+
+sumOD_TDP <- data.frame(
+  typeTDP = c(unique(ArchR_C9_OD_typeTDP_ct$typeTDP)),
+  sumOD_TDP=c(sum(ArchR_C9_OD_typeTDP_ct[which(ArchR_C9_OD_typeTDP_ct$typeTDP=='CTL'), 2]),
+sum(ArchR_C9_OD_typeTDP_ct[which(ArchR_C9_OD_typeTDP_ct$typeTDP=='highTDP'), 2]),
+sum(ArchR_C9_OD_typeTDP_ct[which(ArchR_C9_OD_typeTDP_ct$typeTDP=='medTDP'), 2]),
+sum(ArchR_C9_OD_typeTDP_ct[which(ArchR_C9_OD_typeTDP_ct$typeTDP=='noTDP'), 2]))
+)
+
+ArchR_C9_OD_typeTDP_ct <- merge(ArchR_C9_OD_typeTDP_ct, sumOD_TDP, by="typeTDP") %>% arrange(clu)
+ArchR_C9_OD_typeTDP_ct$percentTDPtype <- ArchR_C9_OD_typeTDP_ct$typeTDP_ct / ArchR_C9_OD_typeTDP_ct$sumOD_TDP
+
+write.table(ArchR_C9_OD_typeTDP_ct,
+    "ArchR_C9_OD_typeTDP_ct.txt",
+               append= F, sep='\t',row.name = FALSE, col.names = TRUE, quote = FALSE) 
+
+### maybe just shown as a proportional graph -- 
+ArchR_C9_OD_typeTDPeach_ct <- table(ArchR_C9_OD$clu38IDtype) %>% as.data.frame()
+
+colnames(ArchR_C9_OD_typeTDPeach_ct) <- c("name", "typeTDPeach_ct")
+ArchR_C9_OD_typeTDPeach_ct$clu <- sapply(strsplit(ArchR_C9_OD_typeTDPeach_ct$name %>% as.character(), "_"), function(x) x[1])
+ArchR_C9_OD_typeTDPeach_ct$typeTDP <- sapply(strsplit(ArchR_C9_OD_typeTDPeach_ct$name %>% as.character(), "_"), function(x) x[2])
+ArchR_C9_OD_typeTDPeach_ct$group <- sapply(strsplit(ArchR_C9_OD_typeTDPeach_ct$clu %>% as.character(), "-"), function(x) x[2])
+
+ArchR_C9_OD_typeTDPeach_ct$ID <- paste(sapply(strsplit(ArchR_C9_OD_typeTDPeach_ct$name %>% as.character(), "_"), function(x) x[2]),
+                                       sapply(strsplit(ArchR_C9_OD_typeTDPeach_ct$name %>% as.character(), "_"), function(x) x[3]),
+                                       sapply(strsplit(ArchR_C9_OD_typeTDPeach_ct$name %>% as.character(), "_"), function(x) x[4]),sep="_")
+
+library("RColorBrewer")
+ArchR_C9_OD_typeTDPeach_ct <- ArchR_C9_OD_typeTDPeach_ct %>% mutate(clu=factor(clu, levels=c("C32-OPC","C33-OPC","C34-OPC","C4-ODC","C6-ODC","C7-ODC","C8-ODC","C9-ODC","C10-ODC"))) %>% mutate(ID=factor(ID, levels=c("CTL_rep1_E15","CTL_rep2_E05","CTL_rep3_E14","CTL_rep4_E15","CTL_rep5_E13","noTDP_rep1_E13","noTDP_rep2_E06","noTDP_rep3_E15", "medTDP_rep4_E04","medTDP_rep5_E14", "medTDP_rep6_E15","highTDP_rep7_E16","highTDP_rep8_E12","highTDP_rep9_E14"))) 
+
+pdf(file="ArchR_C9_OD_typeTDPeach_ct_proportions.pdf", 
+     width = 3, height =3, onefile=TRUE)
+ggplot(ArchR_C9_OD_typeTDPeach_ct, aes(x = ID,y=typeTDPeach_ct, fill = clu)) + 
+    geom_bar(position = "fill", stat="identity")+ #scale_fill_brewer(palette = "Blues") 
+  scale_fill_manual(values = c(brewer.pal(name="PuRd", n = 9)[c(9,5,3)], brewer.pal(name="Greens", n = 9)[c(9,5,3)],brewer.pal(name="Blues", n = 9)[c(9,6,4)]))+
+  theme_Publication() +theme(axis.text.x=element_text(angle=90,hjust=1))+
+  ylab("Proportions of clusters in oligodendrocyte lineage") +xlab("")
+dev.off()
+
+
+### Needs to add a percentage, total is per patient
+ArchR_C9_OD_typeTDPeach_ct %>% dplyr::filter(clu=="C6-ODC")
+
+## add the ID_ct to the data -- that way I can skip doing merge
+library(dplyr)
+
+ArchR_C9_OD_typeTDPeach_ct <- ArchR_C9_OD_typeTDPeach_ct %>% 
+  group_by(ID) %>% 
+  #summarise(cond_disp = sum(disp)) ## summarise is to just keep the count 
+  mutate(ID_ct = sum(typeTDPeach_ct))
+
+ArchR_C9_OD_typeTDPeach_ct$percent <- ArchR_C9_OD_typeTDPeach_ct$typeTDPeach_ct / ArchR_C9_OD_typeTDPeach_ct$ID_ct
+
+### save the list 
+write.table(ArchR_C9_OD_typeTDPeach_ct,
+    "ArchR_C9_OD_typeTDPeach_ct.txt",
+               append= F, sep='\t',row.name = FALSE, col.names = TRUE, quote = FALSE) 
+
+################
+### Just the C6 Box plot
+
+ArchR_C9_OD_typeTDPeach_ct_C6 <- ArchR_C9_OD_typeTDPeach_ct %>% dplyr::filter(clu=="C6-ODC") %>% as.data.frame()
+
+### Then the dunnTest
+### the dunnTest for comparisons with corrections
+ library("FSA")
+dunnTest_ODc6 <- dunnTest(percent ~ typeTDP,  data = ArchR_C9_OD_typeTDPeach_ct_C6, method = "bh", list=TRUE)$res %>% as.data.frame()
+
+  dunnTest_ODc6$group1 <- sapply(strsplit(dunnTest_ODc6$Comparison %>% as.character(), " - "), function(x) x[1])
+  dunnTest_ODc6$group2 <- sapply(strsplit(dunnTest_ODc6$Comparison %>% as.character(), " - "), function(x) x[2])
+    dunnTest_ODc6 <- dunnTest_ODc6 %>% dplyr::filter(group1=="CTL")
+      dunnTest_ODc6$p.signif <- signif(dunnTest_ODc6$P.adj, digits = 3) 
+      
+pdf(file="OD_C6_boxplot_percentage.pdf", 
+     width = 1.6, height =2, onefile=TRUE)  
+ggplot(ArchR_C9_OD_typeTDPeach_ct_C6, aes(x=typeTDP, y=percent)) + 
+  geom_boxplot(outlier.shape = NA, color="black",size = 0.15, width = 0.8)+ ylim(0,0.8)+
+  #geom_point(aes(x=all, y=rho, color=group), position = "jitter") +
+  geom_jitter(aes(x=typeTDP, y=percent, color=typeTDP), width = 0.1, size=0.5)+ stat_compare_means(size=2) +
+  #stat_compare_means(ref.group = "CTL", label = "p.signif",hide.ns = FALSE, size=1) +
+stat_pvalue_manual(size=1,
+  dunnTest_ODc6, x = "group2", y.position = 0.7,
+  label = "p.signif",
+  position = position_dodge(-0.1)
+)+theme_Publication()
+dev.off()
+```
+
+## marker genes identify specific identity of each oligodendrocyte clusters
+```{r}
+
+ArchR_C9_OD$type2
+#################################################################################### 
+### 9 ### get marker gene features -- ATAC
+  # --1-- # the marker genes per each cluster-->based on GeneScore
+ArchR_C9_OD.type2.markersGS <- getMarkerFeatures(
+                    ArchRProj = ArchR_C9_OD, 
+                    useMatrix = "GeneScoreMatrix", 
+                    groupBy = "type2",
+                    bias = c("TSSEnrichment", "log10(nFrags)"),
+                    testMethod = "wilcoxon"
+                ) 
+
+###### then export the list of all. 
+PATH <- "DIR"
+## export the list 
+# set the variable, so this can function easier, without writing multiple things: 
+markersGS.rds <- ArchR_C9_OD.type2.markersGS
+markersGS.rds.name <- "ArchR_C9_OD.type2.markersGS"
+csv.file1 <- paste(PATH,markersGS.rds.name, ".FDR001_log2FC05.csv", sep="")
+csv.file2 <- paste(PATH,markersGS.rds.name, ".FDR005_log2FC05.csv", sep="")
+
+  # --1-- # get markers list per cluster to verify -> use stronger list 
+mrk.reg <- getMarkers(markersGS.rds, cutOff = "FDR <= 0.01 & Log2FC >= 0.5")  
+mrk.low <- getMarkers(markersGS.rds, cutOff = "FDR <= 0.05 & Log2FC >= 0.5")  
+
+colnames.mrk <- c("seqnames","start","end","strand","gene","idx","Log2FC","FDR","MeanDiff")
+ mrk.reg.2 <-  lapply(mrk.reg, setNames, colnames.mrk)
+ mrk.low.2 <-  lapply(mrk.low, setNames, colnames.mrk)
+
+# --2-- # find out what's non sig
+ mrk.reg.2 <- Filter(function(x) dim(x)[1] > 0, mrk.reg.2)
+ mrk.low.2 <- Filter(function(x) dim(x)[1] > 0, mrk.low.2)
+
+# --3-- # loop to write it out
+ rm(d.all)
+for (n in names(mrk.reg.2))
+  mrk.reg.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.reg.2)
+  write.table(as.data.frame(d.all), csv.file1, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)
+ rm(d.all)
+for (n in names(mrk.low.2))
+  mrk.low.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.low.2)
+  write.table(as.data.frame(d.all), csv.file2, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)  
+######### STOP here ########       
+
+### But need a ODC specific get features 
+### Complement receptor 3 (CR3) is a heterodimer of α (CD11b = ITGAM) and β (CD18=ITGB2) transmembrane glycoproteins
+    ODCgenes <- c("MOBP", "MBP","ST18","KLK6", "SLC5A11", "MAG") #ODC, also MAG
+
+ArchR_C9_OD.type2.markersGS_hm <- plotMarkerHeatmap(
+  seMarker = ArchR_C9_OD.type2.markersGS, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
+  labelMarkers = c(ODCgenes, OPCgenes),
+  scaleRows = TRUE,
+  transpose = FALSE, returnMatrix=FALSE, nPrint=10, nLabel = 3) #%>% nrow() ## this return the uniq 7351
+
+pdf(file="ArchR_C9_OD.type2.markersGS_heatmap1.pdf", 
+     width = 5, height =4.4, onefile=TRUE)
+ArchR_C9_OD.type2.markersGS_hm
+dev.off() ## close
+
+  ODCgenes <- c("MOBP", "MBP","ST18","KLK6", "SLC5A11", "MAG") #ODC, also MAG
+
+##### Just the ODCs--- 
+  ArchR_C9_OD[BiocGenerics::which(ArchR_C9_OD$type2name !="OPC")]
+#################################################################################### 
+### 9 ### get marker gene features -- ATAC
+  # --1-- # the marker genes per each cluster-->based on GeneScore
+ArchR_C9_ODConly.type2.markersGS <- getMarkerFeatures(
+                    ArchRProj = ArchR_C9_OD[BiocGenerics::which(ArchR_C9_OD$type2name !="OPC")], 
+                    useMatrix = "GeneScoreMatrix", 
+                    groupBy = "type2",
+                    bias = c("TSSEnrichment", "log10(nFrags)"),
+                    testMethod = "wilcoxon"
+                ) 
+    ## save the features SE
+###### then export the list of all. 
+PATH <- "markerGS"
+## export the list 
+# set the variable, so this can function easier, without writing multiple things: 
+markersGS.rds <- ArchR_C9_ODConly.type2.markersGS
+markersGS.rds.name <- "ArchR_C9_ODConly.type2.markersGS"
+csv.file1 <- paste(PATH,markersGS.rds.name, ".FDR001_log2FC05.csv", sep="")
+csv.file2 <- paste(PATH,markersGS.rds.name, ".FDR005_log2FC05.csv", sep="")
+
+  # --1-- # get markers list per cluster to verify -> use stronger list 
+mrk.reg <- getMarkers(markersGS.rds, cutOff = "FDR <= 0.01 & Log2FC >= 0.5")  
+mrk.low <- getMarkers(markersGS.rds, cutOff = "FDR <= 0.05 & Log2FC >= 0.5")  
+
+colnames.mrk <- c("seqnames","start","end","strand","gene","idx","Log2FC","FDR","MeanDiff")
+ mrk.reg.2 <-  lapply(mrk.reg, setNames, colnames.mrk)
+ mrk.low.2 <-  lapply(mrk.low, setNames, colnames.mrk)
+
+# --2-- # find out what's non sig
+ mrk.reg.2 <- Filter(function(x) dim(x)[1] > 0, mrk.reg.2)
+ mrk.low.2 <- Filter(function(x) dim(x)[1] > 0, mrk.low.2)
+
+# --3-- # loop to write it out
+ rm(d.all)
+for (n in names(mrk.reg.2))
+  mrk.reg.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.reg.2)
+  write.table(as.data.frame(d.all), csv.file1, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)
+ rm(d.all)
+for (n in names(mrk.low.2))
+  mrk.low.2[[n]]['name'] = n
+  d.all = do.call(rbind, mrk.low.2)
+  write.table(as.data.frame(d.all), csv.file2, append= T, sep=',', 
+              row.name = TRUE, col.names = TRUE, quote = FALSE)  
+######### STOP here ########    
+####
+  ### look at heamtap
+  ArchR_C9_ODConly.type2.markersGS_hm <- plotMarkerHeatmap(
+  seMarker = ArchR_C9_ODConly.type2.markersGS, 
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5",
+    #labelMarkers = "ZNF488",
+  scaleRows = TRUE,
+  transpose = FALSE, returnMatrix=TRUE, nPrint=10, nLabel = 5) #%>% nrow() ## this return the uniq 7351
+
+pdf(file="ArchR_C9_OD.type2.markersGS_heatmap1.pdf", 
+     width = 5, height =4.4, onefile=TRUE)
+ArchR_C9_OD.type2.markersGS_hm
+dev.off() ## close
+
+#### use UMAP instead
+#GSp
+MG_spec_geness_GSp <-plotEmbedding(ArchR_C9_MG, embedding = "allcells-combined-Ham-UMAP3", 
+                                  #alpha = 0.8,#baseSize=0, 
+                             size =2, #plotAs = "points", #defaultColor = "grey95", 
+                                       colorBy = "GeneScoreMatrix", continuousSet = "solarExtra",
+                             #pal=col.MG,  
+                             ratioYX=1,name = c(MG_spec_genes,"C9orf72"),
+                             imputeWeights = getImputeWeights(ArchR_C9_MG),
+                             bgWidth=1.2, labelSize=0, highlightCells= ArchR_C9.MG_only)
+pdf(file="ArchR_C9.UMAP_MG_spec_genes.GSp.pdf", 
+     width = 2, height =2, onefile=TRUE)
+  ## Plot it:
+MG_spec_geness_GSp
+dev.off() ## close
+
+#### find the znf488 
+ArchR_C9_ODConly.type2.markersGS_mat <- plotMarkerHeatmap(
+  seMarker = ArchR_C9_ODConly.type2.markersGS, 
+  cutOff = "FDR <= 0.1 & Log2FC >= 0.5",
+    #labelMarkers = "ZNF488",
+  scaleRows = TRUE,
+  transpose = FALSE, returnMatrix=TRUE, nPrint=10, nLabel = 5) #%>% nrow() ## this return the uniq 7351
+
+ArchR_C9_ODConly.type2.markersGS_df <- ArchR_C9_ODConly.type2.markersGS_mat %>% as.data.frame()
+ArchR_C9_ODConly.type2.markersGS_df$gene <- rownames(ArchR_C9_ODConly.type2.markersGS_df)
+ArchR_C9_ODConly.type2.markersGS_df %>% dplyr::filter(gene=="ZNF488")
+
+## work on the bigger list to get a better diff genes 
+
+ArchR_C9.combo_clu09.markersGS_OD_mat <- plotMarkerHeatmap(
+  seMarker = ArchR_C9.combo_clu09.markersGS[, unique(ArchR_C9_OD$clu38)], 
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5", 
+  #labelMarkers = MGgenes_V2, 
+  scaleRows = TRUE,
+  transpose = FALSE, returnMatrix=TRUE)
+
+ArchR_C9.combo_clu09.markersGS_OD_df <- ArchR_C9.combo_clu09.markersGS_OD_mat %>% as.data.frame()
+ArchR_C9.combo_clu09.markersGS_OD_df$gene <- rownames(ArchR_C9.combo_clu09.markersGS_OD_df)
+ArchR_C9.combo_clu09.markersGS_OD_df %>% dplyr::filter(gene=="ZNF488")
+
+ArchR_C9.combo_clu09.markersGS_OD_df[]
+
+write.table(ArchR_C9.combo_clu09.markersGS_OD_df,
+    "ArchR_C9.combo_clu09.markersGS_OD_df.csv",
+               append= F, sep=',',row.name = FALSE, col.names = TRUE, quote = FALSE) 
+
+### this is a better map
+  OD_genes <- read.table("genes_mark.txt")[,1]
+
+  
+ArchR_C9.combo_clu09.markersGS_OD_hm <- plotMarkerHeatmap(
+  seMarker = ArchR_C9.combo_clu09.markersGS[, unique(ArchR_C9_OD$clu38)], 
+  cutOff = "FDR <= 0.01 & Log2FC >= 0.5", 
+  labelMarkers = OD_genes, pal=paletteContinuous("solarExtra"), 
+  scaleRows = TRUE, 
+  transpose = FALSE, returnMatrix=FALSE, nPrint=10, nLabel = 3)
+
+pdf(file="ArchR_C9.combo_clu09.markersGS_OD_hm.v1.pdf", 
+     width = 4, height =2.5, onefile=TRUE)
+  ## Plot it:
+ArchR_C9.combo_clu09.markersGS_OD_hm
+dev.off() ## close
+
+```
+
+## Analysis of developmental stages of the oligodendrocyte lineage cells
+the meylinating genes are all down-regulated in the C6 of the highTDP 
+```{r}
+
+#### highTDP
+fGenes_C6_ODC_vhighTDP.noflt$DEG <- "No"
+fGenes_C6_ODC_vhighTDP.noflt$DEG[fGenes_C6_ODC_vhighTDP.noflt$Log2FC > 0.5 & fGenes_C6_ODC_vhighTDP.noflt$FDR < 0.05] <- "UP"
+fGenes_C6_ODC_vhighTDP.noflt$DEG[fGenes_C6_ODC_vhighTDP.noflt$Log2FC < -0.5 & fGenes_C6_ODC_vhighTDP.noflt$FDR < 0.05] <- "DOWN"
+
+mycolors <- c("blue", "red", "grey")
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+## labels
+fGenes_C6_ODC_vhighTDP.noflt$label <- NA
+## this will label specific genes, or highlight the TDP43 clip trgets 
+C6_vhighTDP_DEG <- unique(c("PLP1", "MBP", "MOG","MAG",
+                     "MBP","PMP22","MAG","PLLP","JAM3")) # the meylien compoenent ones 
+
+fGenes_C6_ODC_vhighTDP.noflt[fGenes_C6_ODC_vhighTDP.noflt$name %in% C6_vhighTDP_DEG,]$label <- 
+  fGenes_C6_ODC_vhighTDP.noflt[fGenes_C6_ODC_vhighTDP.noflt$name %in% C6_vhighTDP_DEG,]$name
+
+# Re-plot but this time color the points with "diffexpressed"
+pdf(file="fGenes_C6_ODC_vhighTDP.volcano.pdf", 
+     width = 2, height =2, onefile=TRUE)
+ggplot(data=fGenes_C6_ODC_vhighTDP.noflt %>% dplyr::filter(seqnames !="chrX"), 
+            aes(x=Log2FC, y=-log10(FDR), col=DEG, label=label)) + geom_point(alpha = 1, size=0.3) + theme_minimal()+
+  geom_text_repel(box.padding = 0.5, max.overlaps = Inf, size=2.2, segment.size=0.1)+xlim(-12,8)+
+  scale_colour_manual(values = mycolors)+theme_Publication()
+dev.off() ## close
+
+
+###########
+
+#--> maybe use violin plt for simplity 
+fGenes_C2_MG_vhighTDP_vPlot <- 
+  ggplot(fGenes_C2_MG_vhighTDP.noflt %>% dplyr::filter(seqnames !="chrX"), aes(x=Log2FC, y=-log10(FDR))) +
+  geom_point(size = 1.8, alpha = 1, na.rm = T, color = "grey", stroke = 0) +
+  ggtitle(label = "dTHSS in Sp: FDR") + labs(caption="FDR<0.05 & FC>2 & >log2(CPM)>4") +
+  geom_hline(yintercept = -log10(0.01), colour="#990000", linetype="dashed") + # 3 = 0.001 FDR cutoff
+  geom_vline(xintercept = 1, colour="#990000", linetype="dashed") + # 2 FC for incease peaks
+  geom_vline(xintercept = -1, colour="#990000", linetype="dashed") +
+  theme_bw(base_size = 12) + 
+  theme(legend.position = "right", plot.title = element_text(size = 10)) + 
+  xlab(expression(log[2]("FC"))) + #"Treat" / "Control"
+  ylab(expression(-log[10]("p.value"))) +
+  annotate("text", x=-2, y=0, label =paste("n= ", LostFDR, sep=""), size = 3) +
+  annotate("text", x=2, y=0, label =paste("n= ", GainFDR, sep=""), size = 3)
+
+setwd(wdPlotPath) 
+jpeg(file=paste("Diff_bind_Sig_PFDR.rough.", SAM, ".jpg", sep=""), 
+     width = 4, height = 8, units = 'in', res = 600)
+grid.arrange(DBedgeR_sig_df_pvalue_plot, DBedgeR_sig_df_FDR_plot, nrow=2)
+dev.off()
+
+plotGroups(ArchRProj = ArchR_C9_OD, 
+           groupBy="clu38TDP",  name = "MAG", plotAs = "violin")
+
+```
+
+## differential gene expression comparison of the entire oligodendrocyte group
+As shown in Figure 3F
+```{r}
+## start with the ODC ones specifically
+ArchR_C9_OD
+
+# just keep the ODC.
+ArchR_C9_ODC <- ArchR_C9_OD[BiocGenerics::which(ArchR_C9_OD$type2name =="ODC")]
+
+ArchR_C9_ODC <-addImputeWeights(ArchR_C9_ODC, reducedDims = "allcells-combined-Ham")
+
+patientTDPType_grps <-unique(ArchR_C9_ODC$patientTDPType)
+  patientTDPType_df <- data.frame(patientTDPType_grps)
+
+colnames(patientTDPType_df) <- "ID"
+  patientTDPType_df$type <- sapply(strsplit(patientTDPType_df$ID, "_"), function(x) x[1]) 
+  patientTDPType_df$group <- sapply(strsplit(patientTDPType_df$ID, "_"), function(x) x[2]) 
+  patientTDPType_df$rep <- sapply(strsplit(patientTDPType_df$ID, "_"), function(x) x[3]) 
+
+patientTDPType_df[1,1] <- data.frame(patientTDPType_df$type)[,1]
+patientTDPType_df2 <- head(patientTDPType_df, 1)
+colnames(patientTDPType_df2) <- "type"
+  patientTDPType_df2$control <- paste(patientTDPType_df2$type, "_","CTL", sep="")
+  patientTDPType_df2$noTDP <- paste(patientTDPType_df2$type, "_","noTDP", sep="")
+  patientTDPType_df2$medTDP <- paste(patientTDPType_df2$type, "_","medTDP", sep="")
+  patientTDPType_df2$highTDP <- paste(patientTDPType_df2$type, "_","highTDP", sep="")
+
+getAvailableMatrices(ArchR_C9_ODC)
+# [1] "GeneExpressionMatrix" "GeneScoreMatrix"      "PeakMatrix"           "TileMatrix"          
+
+### make the files and begin comparison.
+
+fGenes_dir <- "3_fGenes_bulk/"
+fGenes_dirFDR <- "3_fGenes_bulk/FDR/"
+fGenes_dirnoflt <- "3_fGenes_bulk/noflt/"
+fGenes_dirFDRMA <- "3_fGenes_bulk/FDRMA/"
+
+for (U in 1:1) {
+  print(paste("START with--U --",U, sep=""))
+TYPE <- gsub("-", "_",patientTDPType_df2$type[U])
+
+  print(paste("START with U --",U, ":: TYPE is ", TYPE, sep=""))
+CTL <- "CTL"
+highTDP <- "highTDP"
+medTDP <- "medTDP"
+noTDP <- "noTDP"
+  print(paste("compare::", CTL, "with:", highTDP, medTDP, noTDP, sep=' '))
+  
+  print(paste(TYPE,"-- STEP 1 -- fGene comp",sep=""))
+print("=== v highTDP")
+fGenes_vhighTDP <- getMarkerFeatures(
+  ArchRProj = ArchR_C9_ODC, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "TDPgrp",testMethod = "wilcoxon",bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = highTDP,bgdGroups = CTL)
+print("=== v medTDP")
+fGenes_vmedTDP <- getMarkerFeatures(
+  ArchRProj = ArchR_C9_ODC, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "TDPgrp",testMethod = "wilcoxon",bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = medTDP,bgdGroups = CTL)
+print("=== v noTDP")
+fGenes_vnoTDP <- getMarkerFeatures(
+  ArchRProj = ArchR_C9_ODC, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "TDPgrp",testMethod = "wilcoxon",bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = noTDP,bgdGroups = CTL)
+# save out to a name 
+assign(paste("fGenes_",TYPE,"_vhighTDP",sep=""), fGenes_vhighTDP)
+assign(paste("fGenes_",TYPE,"_vmedTDP",sep=""), fGenes_vmedTDP)
+assign(paste("fGenes_",TYPE,"_vnoTDP",sep=""), fGenes_vnoTDP)
+
+## save RDS
+print("== SAVE RDS")
+  saveRDS(fGenes_vhighTDP, paste(fGenes_dir,paste("fGenes_",TYPE,"_vhighTDP",sep=""),".rds",sep="")) 
+  saveRDS(fGenes_vmedTDP, paste(fGenes_dir,paste("fGenes_",TYPE,"_vmedTDP",sep=""),".rds",sep="")) 
+  saveRDS(fGenes_vnoTDP, paste(fGenes_dir,paste("fGenes_",TYPE,"_vnoTDP",sep=""),".rds",sep="")) 
+
+# filter: 
+print("== Filter and write out") # the first item on the list 
+fGenes_vhighTDP_FDR <- getMarkers(fGenes_vhighTDP, cutOff = "FDR <= 0.05 & abs(Log2FC) > 0.5")
+  write.table(fGenes_vhighTDP_FDR[[1]],paste(fGenes_dirFDR,paste("fGenes_",TYPE,"_vhighTDP",sep=""),".FDR.csv",sep=""), 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+fGenes_vmedTDP_FDR <- getMarkers(fGenes_vmedTDP, cutOff = "FDR <= 0.05 & abs(Log2FC) > 0.5")
+  write.table(fGenes_vmedTDP_FDR[[1]],paste(fGenes_dirFDR,paste("fGenes_",TYPE,"_vmedTDP",sep=""),".FDR.csv",sep=""), 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+fGenes_vnoTDP_FDR <- getMarkers(fGenes_vnoTDP, cutOff = "FDR <= 0.05 & abs(Log2FC) > 0.5")
+  write.table(fGenes_vnoTDP_FDR[[1]],paste(fGenes_dirFDR,paste("fGenes_",TYPE,"_vnoTDP",sep=""),".FDR.csv",sep=""), 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+    # save out to a name 
+    assign(paste("fGenes_",TYPE,"_vhighTDP","_FDR",sep=""), fGenes_vhighTDP_FDR)
+    assign(paste("fGenes_",TYPE,"_vmedTDP","_FDR",sep=""), fGenes_vmedTDP_FDR)
+    assign(paste("fGenes_",TYPE,"_vnoTDP","_FDR",sep=""), fGenes_vnoTDP_FDR)
+
+## get the whole list out 
+print("== write out whole list") # the first item on the list 
+fGenes_vhighTDP_noflt <- getMarkers(fGenes_vhighTDP, cutOff = "abs(Log2FC)>=0")
+  write.table(fGenes_vhighTDP_noflt[[1]],paste(fGenes_dirnoflt,paste("fGenes_",TYPE,"_vhighTDP",sep=""),".noflt.csv",sep=""), 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+fGenes_vmedTDP_noflt <- getMarkers(fGenes_vmedTDP, cutOff = "abs(Log2FC)>=0")
+  write.table(fGenes_vmedTDP_noflt[[1]],paste(fGenes_dirnoflt,paste("fGenes_",TYPE,"_vmedTDP",sep=""),".noflt.csv",sep=""), 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+fGenes_vnoTDP_noflt <- getMarkers(fGenes_vnoTDP, cutOff = "abs(Log2FC)>=0")
+  write.table(fGenes_vnoTDP_noflt[[1]],paste(fGenes_dirnoflt,paste("fGenes_",TYPE,"_vnoTDP",sep=""),".noflt.csv",sep=""), 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+## plot MA
+print("== PLOT MA")
+fGenes_vhighTDP_FDR_MA <- plotMarkers(seMarker = fGenes_vhighTDP, name = highTDP, cutOff = "FDR <= 0.05", plotAs = "MA")
+    pdf(file=paste(fGenes_dirFDRMA,paste("fGenes_",TYPE,"_vhighTDP",sep=""),".FDR_MA.pdf",sep=""), width = 5, height = 5)
+        fGenes_vhighTDP_FDR_MA
+    dev.off()
+fGenes_vmedTDP_FDR_MA <- plotMarkers(seMarker = fGenes_vmedTDP, name = medTDP, cutOff = "FDR <= 0.05", plotAs = "MA")
+    pdf(file=paste(fGenes_dirFDRMA,paste("fGenes_",TYPE,"_vmedTDP",sep=""),".FDR_MA.pdf",sep=""), width = 5, height = 5)
+        fGenes_vmedTDP_FDR_MA
+    dev.off()
+fGenes_vnoTDP_FDR_MA <- plotMarkers(seMarker = fGenes_vnoTDP, name = noTDP, cutOff = "FDR <= 0.05", plotAs = "MA")
+    pdf(file=paste(fGenes_dirFDRMA,paste("fGenes_",TYPE,"_vnoTDP",sep=""),".FDR_MA.pdf",sep=""), width = 5, height = 5)
+        fGenes_vnoTDP_FDR_MA
+    dev.off()
+}
+
+
+fGenes_vnoTDP_FDR_MA <- plotMarkers(seMarker = fGenes_vnoTDP, name = noTDP, cutOff = "FDR <= 0.05", plotAs = "MA")
+    pdf(file=paste(fGenes_dirFDRMA,paste("fGenes_",TYPE,"_vnoTDP",sep=""),".FDR_MA.pdf",sep=""), width = 5, height = 5)
+        fGenes_vnoTDP_FDR_MA
+    dev.off()
+
+    library(gtable, grid)
+
+pdf(file="all_ODC_FDR_MA.pdf", width = 5, height = 5, onefile = TRUE)
+grid::grid.text("CTL_vhighTDP",x = (0.5), y = (0.6))
+  fGenes_vhighTDP_FDR_MA
+grid::grid.newpage()
+grid::grid.text("CTL_vmedTDP",x = (0.5), y = (0.6))
+  fGenes_vmedTDP_FDR_MA
+grid::grid.newpage()
+grid::grid.text("CTL_vnoTDP",x = (0.5), y = (0.6))
+  fGenes_vnoTDP_FDR_MA
+dev.off()  
+
+### Try all TDP vs control 
+fGenes_ODC_vall <- getMarkerFeatures(
+  ArchRProj = ArchR_C9_ODC, 
+  useMatrix = "GeneExpressionMatrix",
+  groupBy = "Genotype",testMethod = "wilcoxon",bias = c("TSSEnrichment", "log10(nFrags)"),
+  useGroups = "C9ALS",bgdGroups = "CTL")
+
+
+fGenes_ODC_vall_FDR <- getMarkers(fGenes_ODC_vall, cutOff = "FDR <= 0.05 & abs(Log2FC) > 0.5")
+  write.table(fGenes_ODC_vall_FDR[[1]],"\fGenes_ODC_vall_FDR.csv", 
+          append= F, sep=',', 
+          row.name = FALSE, col.names = TRUE, quote = FALSE)
+
+
+### plotting the data
+
+#### highTDP
+fGenes_ODC_vhighTDP.noflt$DEG <- "No"
+fGenes_ODC_vhighTDP.noflt$DEG[fGenes_ODC_vhighTDP.noflt$Log2FC > 0.5 & fGenes_ODC_vhighTDP.noflt$FDR < 0.05] <- "UP"
+fGenes_ODC_vhighTDP.noflt$DEG[fGenes_ODC_vhighTDP.noflt$Log2FC < -0.5 & fGenes_ODC_vhighTDP.noflt$FDR < 0.05] <- "DOWN"
+
+mycolors <- c("blue", "red", "grey")
+names(mycolors) <- c("DOWN", "UP", "NO")
+
+## labels
+fGenes_ODC_vhighTDP.noflt$label <- NA
+## this will label specific genes, and highlight the TDP43 clip targets 
+C6_vhighTDP_DEG <- unique(c("PLP1", "MBP", "MOG","MAG","MBP","PMP22","MAG","PLLP","JAM3")) # the meylien compoenent ones 
+
+
+fGenes_ODC_vhighTDP.noflt[fGenes_ODC_vhighTDP.noflt$name %in% C6_vhighTDP_DEG,]$label <- 
+  fGenes_ODC_vhighTDP.noflt[fGenes_ODC_vhighTDP.noflt$name %in% C6_vhighTDP_DEG,]$name
+
+library(ggrepel)
+# Re-plot but this time color the points with "diffexpressed"
+pdf(file="/fGenes_all_ODC_vhighTDP.volcano.pdf", 
+     width = 2, height =2, onefile=TRUE)
+ggplot(data=fGenes_ODC_vhighTDP.noflt%>% dplyr::filter(seqnames !="chrX"), 
+            aes(x=Log2FC, y=-log10(FDR), col=DEG, label=label)) + geom_point(alpha = 1, size=0.3) + theme_minimal()+
+  geom_text_repel(box.padding = 0.5, max.overlaps = Inf, size=2.2, segment.size=0.1)+#xlim(-12,8)+
+  scale_colour_manual(values = mycolors)+theme_Publication()
+dev.off() ## close
+
+```
