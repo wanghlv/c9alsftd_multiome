@@ -6,6 +6,8 @@ Victor Corces Lab | Department of Human Genetics | Emory University School of Me
 All analysis was performed in the R programming language (v4.1.1). Analysis code/scripts are available as
 [RMarkdown files](https://github.com/wanghlv/c9alsftd_multiome/tree/main/RMarkdown) and they can be browsed with the links below.
 
+The cell barcode and major cell type metadata for the Emory samples can be found in the meta/ folder. (updated March 2025)
+
 ## Processing and analyses of single nucleus multiome data
 Including processing with ArchR pipeline, identification of cluster and cell type assignments, and snATAC-seq peak calling, etc.
 [Scripts](https://github.com/wanghlv/c9alsftd_multiome/blob/main/RMarkdown/c9alsftd_multiome_ArchR.Rmd)
